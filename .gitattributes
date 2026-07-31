@@ -1,0 +1,36 @@
+* text=auto
+
+.gitattributes text eol=lf
+.gitignore text eol=lf
+*.c text eol=lf
+*.h text eol=lf
+*.s text eol=lf
+*.S text eol=lf
+*.ld text eol=lf
+*.ioc text eol=lf
+*.cmake text eol=lf
+*.cfg text eol=lf
+CMakeLists.txt text eol=lf
+*.gitkeep text eol=lf
+*.md text eol=lf
+*.yml text eol=lf
+*.yaml text eol=lf
+*.json text eol=lf
+*.sh text eol=lf
+*.bat text eol=crlf
+*.cmd text eol=crlf
+
+*.doc binary
+*.docx binary
+*.pdf binary
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.gif binary
+
+# Preserve vendor/generated formatting; CubeMX regeneration owns these files.
+boards/*/.mxproject -whitespace
+boards/*/Core/** -whitespace
+boards/*/Drivers/** -whitespace
+boards/*/cmake/stm32cubemx/** -whitespace
+boards/*/startup_*.s -whitespace
