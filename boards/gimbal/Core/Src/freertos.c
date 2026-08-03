@@ -47,24 +47,20 @@
 /* USER CODE BEGIN Variables */
 
 /* USER CODE END Variables */
-osThreadId motor_taskHandle;
 osThreadId can_recv_taskHandle;
+osThreadId input_taskHandle;
 osThreadId can_send_taskHandle;
 osThreadId health_taskHandle;
-osThreadId led_taskHandle;
-osThreadId display_taskHandle;
 
 /* Private function prototypes -----------------------------------------------*/
 /* USER CODE BEGIN FunctionPrototypes */
 
 /* USER CODE END FunctionPrototypes */
 
-void StartMotorTask(void const * argument);
 void StartCanRecvTask(void const * argument);
+void StartInputTask(void const * argument);
 void StartCanSendTask(void const * argument);
 void StartHealthTask(void const * argument);
-void StartLedTask(void const * argument);
-void StartDisplayTask(void const * argument);
 
 void MX_FREERTOS_Init(void); /* (MISRA C 2004 rule 8.1) */
 
@@ -111,29 +107,21 @@ void MX_FREERTOS_Init(void) {
   /* USER CODE END RTOS_QUEUES */
 
   /* Create the thread(s) */
-  /* definition and creation of motor_task */
-  osThreadDef(motor_task, StartMotorTask, osPriorityHigh, 0, 256);
-  motor_taskHandle = osThreadCreate(osThread(motor_task), NULL);
-
   /* definition and creation of can_recv_task */
   osThreadDef(can_recv_task, StartCanRecvTask, osPriorityAboveNormal, 0, 256);
   can_recv_taskHandle = osThreadCreate(osThread(can_recv_task), NULL);
 
+  /* definition and creation of input_task */
+  osThreadDef(input_task, StartInputTask, osPriorityNormal, 0, 128);
+  input_taskHandle = osThreadCreate(osThread(input_task), NULL);
+
   /* definition and creation of can_send_task */
-  osThreadDef(can_send_task, StartCanSendTask, osPriorityNormal, 0, 128);
+  osThreadDef(can_send_task, StartCanSendTask, osPriorityBelowNormal, 0, 128);
   can_send_taskHandle = osThreadCreate(osThread(can_send_task), NULL);
 
   /* definition and creation of health_task */
   osThreadDef(health_task, StartHealthTask, osPriorityLow, 0, 128);
   health_taskHandle = osThreadCreate(osThread(health_task), NULL);
-
-  /* definition and creation of led_task */
-  osThreadDef(led_task, StartLedTask, osPriorityLow, 0, 128);
-  led_taskHandle = osThreadCreate(osThread(led_task), NULL);
-
-  /* definition and creation of display_task */
-  osThreadDef(display_task, StartDisplayTask, osPriorityLow, 0, 256);
-  display_taskHandle = osThreadCreate(osThread(display_task), NULL);
 
   /* USER CODE BEGIN RTOS_THREADS */
   /* add threads, ... */
@@ -141,30 +129,12 @@ void MX_FREERTOS_Init(void) {
 
 }
 
-/* USER CODE BEGIN Header_StartMotorTask */
+/* USER CODE BEGIN Header_StartCanRecvTask */
 /**
-  * @brief  Function implementing the motor_task thread.
+  * @brief  Function implementing the can_recv_task thread.
   * @param  argument: Not used
   * @retval None
   */
-/* USER CODE END Header_StartMotorTask */
-void StartMotorTask(void const * argument)
-{
-  /* USER CODE BEGIN StartMotorTask */
-  /* Infinite loop */
-  for(;;)
-  {
-    osDelay(1);
-  }
-  /* USER CODE END StartMotorTask */
-}
-
-/* USER CODE BEGIN Header_StartCanRecvTask */
-/**
-* @brief Function implementing the can_recv_task thread.
-* @param argument: Not used
-* @retval None
-*/
 /* USER CODE END Header_StartCanRecvTask */
 void StartCanRecvTask(void const * argument)
 {
@@ -175,6 +145,24 @@ void StartCanRecvTask(void const * argument)
     osDelay(1);
   }
   /* USER CODE END StartCanRecvTask */
+}
+
+/* USER CODE BEGIN Header_StartInputTask */
+/**
+* @brief Function implementing the input_task thread.
+* @param argument: Not used
+* @retval None
+*/
+/* USER CODE END Header_StartInputTask */
+void StartInputTask(void const * argument)
+{
+  /* USER CODE BEGIN StartInputTask */
+  /* Infinite loop */
+  for(;;)
+  {
+    osDelay(1);
+  }
+  /* USER CODE END StartInputTask */
 }
 
 /* USER CODE BEGIN Header_StartCanSendTask */
@@ -211,42 +199,6 @@ void StartHealthTask(void const * argument)
     osDelay(1);
   }
   /* USER CODE END StartHealthTask */
-}
-
-/* USER CODE BEGIN Header_StartLedTask */
-/**
-* @brief Function implementing the led_task thread.
-* @param argument: Not used
-* @retval None
-*/
-/* USER CODE END Header_StartLedTask */
-void StartLedTask(void const * argument)
-{
-  /* USER CODE BEGIN StartLedTask */
-  /* Infinite loop */
-  for(;;)
-  {
-    osDelay(1);
-  }
-  /* USER CODE END StartLedTask */
-}
-
-/* USER CODE BEGIN Header_StartDisplayTask */
-/**
-* @brief Function implementing the display_task thread.
-* @param argument: Not used
-* @retval None
-*/
-/* USER CODE END Header_StartDisplayTask */
-void StartDisplayTask(void const * argument)
-{
-  /* USER CODE BEGIN StartDisplayTask */
-  /* Infinite loop */
-  for(;;)
-  {
-    osDelay(1);
-  }
-  /* USER CODE END StartDisplayTask */
 }
 
 /* Private application code --------------------------------------------------*/
