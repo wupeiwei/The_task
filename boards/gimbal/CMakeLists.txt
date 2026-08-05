@@ -46,6 +46,7 @@ target_link_directories(${CMAKE_PROJECT_NAME} PRIVATE
 target_sources(${CMAKE_PROJECT_NAME} PRIVATE
     # Add user sources here
     ${CMAKE_CURRENT_SOURCE_DIR}/../../components/can_protocol.c
+    ${CMAKE_CURRENT_SOURCE_DIR}/../../components/can_bus.c
 )
 
 # Add include paths
@@ -57,6 +58,7 @@ target_include_directories(${CMAKE_PROJECT_NAME} PRIVATE
 # Add project symbols (macros)
 target_compile_definitions(${CMAKE_PROJECT_NAME} PRIVATE
     # Add user defined symbols
+    BOARD_GIMBAL
 )
 
 # Remove wrong libob.a library dependency when using cpp files

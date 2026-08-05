@@ -45,7 +45,7 @@
 
 /* Private variables ---------------------------------------------------------*/
 /* USER CODE BEGIN Variables */
-
+QueueHandle_t can_rx_queue;   // 定义本体
 /* USER CODE END Variables */
 osThreadId can_recv_taskHandle;
 osThreadId input_taskHandle;
@@ -87,7 +87,7 @@ void vApplicationGetIdleTaskMemory( StaticTask_t **ppxIdleTaskTCBBuffer, StackTy
   */
 void MX_FREERTOS_Init(void) {
   /* USER CODE BEGIN Init */
-
+  can_rx_queue = xQueueCreate(8, sizeof(uint8_t[8]));
   /* USER CODE END Init */
 
   /* USER CODE BEGIN RTOS_MUTEX */

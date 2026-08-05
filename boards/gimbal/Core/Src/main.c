@@ -25,7 +25,7 @@
 
 /* Private includes ----------------------------------------------------------*/
 /* USER CODE BEGIN Includes */
-
+#include "can_bus.h"
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
@@ -93,7 +93,7 @@ int main(void)
   MX_ADC1_Init();
   MX_CAN_Init();
   /* USER CODE BEGIN 2 */
-
+  can_bus_init();//can发送函数初始化
   /* USER CODE END 2 */
 
   /* Call init function for freertos objects (in cmsis_os2.c) */

@@ -8,8 +8,10 @@
 #include <stdint.h>
 #include <stddef.h>
 
+//CRC校验函数，数学原理是伽罗华域多项式除法
 uint8_t crc8(const uint8_t *data, size_t len);
 
+//控制帧的结构体定义
 #define CAN_CTRL_FRAME_ID 0x101
 typedef struct
 {
@@ -22,7 +24,7 @@ typedef struct
 void pack_control_frame(const control_frame_t *cf, uint8_t *tx_data);
 uint8_t parse_control_frame(const uint8_t *rx_data, control_frame_t *cf);
 
-
+//反馈帧的结构体定义
 #define CAN_FB_FRAME_ID 0x201
 typedef struct
 {
