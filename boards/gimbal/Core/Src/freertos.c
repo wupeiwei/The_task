@@ -27,6 +27,8 @@
 /* USER CODE BEGIN Includes */
 #include "queue.h"
 #include "can_protocol.h"
+#include "adc.h"          // hadc1 句柄声明在这（adc.c 里定义）
+#include "can_bus.h"      // can_bus_send 声明 + can_rx_queue extern
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
@@ -53,6 +55,7 @@ volatile int16_t servo_target_speed = 0;   // 舵机目标转速（底盘：recv
 volatile int16_t motor_current_speed = 0;  // 电机实际转速（云台：recv写）
 volatile uint32_t last_rx_tick = 0;        // 最近收到有效帧的时间（心跳用）
 volatile uint8_t can_comm_ok = 0;          //状态字节和LED
+volatile uint16_t adc_buf[2];   // DMA 持续写入的摇杆原始值（CH0/CH1）
 /* USER CODE END Variables */
 osThreadId can_recv_taskHandle;
 osThreadId input_taskHandle;
@@ -184,13 +187,28 @@ void StartCanRecvTask(void const * argument)
 * @retval None
 */
 /* USER CODE END Header_StartInputTask */
+//摇杆采样输入函数
 void StartInputTask(void const * argument)
 {
   /* USER CODE BEGIN StartInputTask */
+  HAL_ADC_Start_DMA(&hadc1, (uint32_t*)adc_buf, 2);   // 启动 DMA 采样（只启动这一次）
   /* Infinite loop */
   for(;;)
   {
-    osDelay(1);
+    // 读原始值：CH0=Y轴（电机），CH1=X轴（舵机）——按实际接线调
+    int32_t y_raw = adc_buf[0];
+    int32_t x_raw = adc_buf[1];
+
+    //摇杆回中 = 2048，减去得到偏差（-2048~+2048）设置回中为0点
+    y_raw -= 2048;
+    if (y_raw > -50 && y_raw < 50) y_raw = 0;            // 死区：防摇杆抖动漂移
+    motor_target_speed = (int16_t)(y_raw * 1000 / 2048); // 映射 ±1000 RPM
+
+    x_raw -= 2048;
+    if (x_raw > -50 && x_raw < 50) x_raw = 0;
+    servo_target_speed = (int16_t)(x_raw * 1000 / 2048); // 舵机目标转速
+
+    osDelay(10);
   }
   /* USER CODE END StartInputTask */
 }
@@ -212,8 +230,8 @@ void StartCanSendTask(void const * argument)
   for(;;)
   {
     /* 1. 读共享变量，填协议结构体 */
-    cf.motor_target_speed = 0;        // ← 摇杆指令（input_task 还没写，先填 0）
-    cf.servo_target_speed = 0;        // ← 舵机指令（同上）
+    cf.motor_target_speed = motor_target_speed;        //  摇杆指令
+    cf.servo_target_speed = servo_target_speed;        //  舵机指令（同上）
     /* 2. pack 成 8 字节 */
     pack_control_frame(&cf, tx_data);
     /* 3. 发出去 */
