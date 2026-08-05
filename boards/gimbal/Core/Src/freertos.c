@@ -25,7 +25,8 @@
 
 /* Private includes ----------------------------------------------------------*/
 /* USER CODE BEGIN Includes */
-
+#include "queue.h"
+#include "can_protocol.h"
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
@@ -46,6 +47,12 @@
 /* Private variables ---------------------------------------------------------*/
 /* USER CODE BEGIN Variables */
 QueueHandle_t can_rx_queue;   // 定义本体
+//共享变量
+volatile int16_t motor_target_speed = 0;   // 电机目标速度（底盘：recv写，motor读）
+volatile int16_t servo_target_speed = 0;   // 舵机目标转速（底盘：recv写，显示读）
+volatile int16_t motor_current_speed = 0;  // 电机实际转速（云台：recv写）
+volatile uint32_t last_rx_tick = 0;        // 最近收到有效帧的时间（心跳用）
+volatile uint8_t can_comm_ok = 0;          //状态字节和LED
 /* USER CODE END Variables */
 osThreadId can_recv_taskHandle;
 osThreadId input_taskHandle;
@@ -139,10 +146,33 @@ void MX_FREERTOS_Init(void) {
 void StartCanRecvTask(void const * argument)
 {
   /* USER CODE BEGIN StartCanRecvTask */
+  uint8_t rx_data[8];//队列里取出的原始帧
+  //条件编译的编写，实则和定义变量是很相像的
+#ifdef BOARD_GIMBAL
+  feedback_frame_t ff;//云台：解析反馈帧
+#else
+  control_frame_t cf;//底盘：解析控制帧
+#endif
   /* Infinite loop */
   for(;;)
   {
-    osDelay(1);
+    if (xQueueReceive(can_rx_queue, rx_data, portMAX_DELAY) == pdPASS)//阻塞等待队列，有帧醒来
+    {
+#ifdef BOARD_GIMBAL
+      if (parse_feedback_frame(rx_data, &ff))// 解析：CRC 不过 parse 返回 0，直接丢
+      {
+        motor_current_speed = ff.motor_current_speed;  // 存共享变量
+        last_rx_tick = HAL_GetTick(); // 心跳的时间戳，用来算超时
+      }
+#else
+      if (parse_control_frame(rx_data, &cf))//依旧是解析校验crc
+      {
+        motor_target_speed = cf.motor_target_speed;
+        servo_target_speed = cf.servo_target_speed;
+        last_rx_tick = HAL_GetTick();//依旧同上
+      }
+#endif
+    }
   }
   /* USER CODE END StartCanRecvTask */
 }
@@ -175,10 +205,20 @@ void StartInputTask(void const * argument)
 void StartCanSendTask(void const * argument)
 {
   /* USER CODE BEGIN StartCanSendTask */
+  uint8_t tx_data[8];
+  control_frame_t cf = {0};
+  cf.version = 1; //协议版本
   /* Infinite loop */
   for(;;)
   {
-    osDelay(1);
+    /* 1. 读共享变量，填协议结构体 */
+    cf.motor_target_speed = 0;        // ← 摇杆指令（input_task 还没写，先填 0）
+    cf.servo_target_speed = 0;        // ← 舵机指令（同上）
+    /* 2. pack 成 8 字节 */
+    pack_control_frame(&cf, tx_data);
+    /* 3. 发出去 */
+    can_bus_send(CAN_CTRL_FRAME_ID, tx_data);
+    osDelay(5);                         // 5ms 周期（协议定的）
   }
   /* USER CODE END StartCanSendTask */
 }
@@ -196,7 +236,11 @@ void StartHealthTask(void const * argument)
   /* Infinite loop */
   for(;;)
   {
-    osDelay(1);
+    if (HAL_GetTick() - last_rx_tick > 100)  // 100ms 没收到有效帧
+      can_comm_ok = 0;                     //  板间通信异常
+    else
+      can_comm_ok = 1;                     //  正常
+    osDelay(20);
   }
   /* USER CODE END StartHealthTask */
 }
