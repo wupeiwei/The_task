@@ -30,6 +30,8 @@
 #include "tim.h"     // TIM3->CNT、htim1、HAL_TIM_PWM_Start
 #include "gpio.h"    // PB12/PB13 方向脚
 #include "can_bus.h" // can_bus_send 声明 + can_rx_queue extern
+#include "stdio.h"    // sprintf
+#include "oled.h"     // OLED 驱动
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
@@ -247,6 +249,7 @@ void StartCanRecvTask(void const * argument)
       {
         motor_target_speed = cf.motor_target_speed;
         servo_target_speed = cf.servo_target_speed;
+        servo_online = (cf.gimbal_state & 0x01) ? 1 : 0;   // 位0：舵机在线
         last_rx_tick = HAL_GetTick();//依旧同上
       }
 #endif
@@ -327,10 +330,34 @@ void StartHealthTask(void const * argument)
 void StartLedTask(void const * argument)
 {
   /* USER CODE BEGIN StartLedTask */
+  uint8_t duty = 0;        // 当前亮度 0~20
+  int8_t  dir = 1;         // 呼吸方向（亮→灭 / 灭→亮）
+  uint8_t pwm_cnt = 0;     // 20ms 周期内的位置
   /* Infinite loop */
   for(;;)
   {
-    osDelay(1);
+#ifdef BOARD_GIMBAL
+    uint8_t fault = !can_comm_ok;   // 云台：CAN 通信异常
+#else
+    uint8_t fault = motor_fault;    // 底盘：电机异常
+#endif
+    if (fault)
+    {
+      /* 软件 PWM：亮 duty/20，灭 (20-duty)/20 */
+      HAL_GPIO_WritePin(GPIOC, GPIO_PIN_13, (pwm_cnt < duty) ? GPIO_PIN_RESET : GPIO_PIN_SET);
+      pwm_cnt++;
+      if (pwm_cnt >= 20)            // 一个 PWM 周期结束
+      {
+        pwm_cnt = 0;
+        duty += dir;                // 亮度调一级
+        if (duty >= 20 || duty == 0) dir = -dir;   // 到头反向
+      }
+    }
+    else
+    {
+      HAL_GPIO_WritePin(GPIOC, GPIO_PIN_13, GPIO_PIN_SET);  // 正常：灭
+    }
+    osDelay(1);                     // 1ms 节拍（PWM 周期 20ms，20 级亮度）
   }
   /* USER CODE END StartLedTask */
 }
@@ -345,10 +372,25 @@ void StartLedTask(void const * argument)
 void StartDisplayTask(void const * argument)
 {
   /* USER CODE BEGIN StartDisplayTask */
+  oled_init();
+  oled_clear();
+  char buf[22];
   /* Infinite loop */
   for(;;)
   {
-    osDelay(1);
+    //行0：舵机目标转速 + 在线
+    sprintf(buf, "SERVO:%5dRPM %s", servo_target_speed, servo_online ? "ON " : "OFF");
+    oled_show_string(0, 0, buf);
+    //行2：电机目标/实际转速
+    sprintf(buf, "MOTOR:%4d/%4d", motor_target_speed, motor_current_speed);
+    oled_show_string(2, 0, buf);
+    //行4：电机在线 + 异常
+    sprintf(buf, "MST:%s FLT:%s", motor_online ? "ON " : "OFF", motor_fault ? "YES" : "NO ");
+    oled_show_string(4, 0, buf);
+    //行6：板间通信
+    sprintf(buf, "CAN:%s", can_comm_ok ? "OK " : "ERR");
+    oled_show_string(6, 0, buf);
+    osDelay(100);                    // 100ms 刷新（人眼够用，省 CPU）
   }
   /* USER CODE END StartDisplayTask */
 }

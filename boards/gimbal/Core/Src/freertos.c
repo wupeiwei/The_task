@@ -65,6 +65,7 @@ osThreadId can_recv_taskHandle;
 osThreadId input_taskHandle;
 osThreadId can_send_taskHandle;
 osThreadId health_taskHandle;
+osThreadId led_taskHandle;
 
 /* Private function prototypes -----------------------------------------------*/
 /* USER CODE BEGIN FunctionPrototypes */
@@ -75,6 +76,7 @@ void StartCanRecvTask(void const * argument);
 void StartInputTask(void const * argument);
 void StartCanSendTask(void const * argument);
 void StartHealthTask(void const * argument);
+void StartLedTask(void const * argument);
 
 void MX_FREERTOS_Init(void); /* (MISRA C 2004 rule 8.1) */
 
@@ -136,6 +138,10 @@ void MX_FREERTOS_Init(void) {
   /* definition and creation of health_task */
   osThreadDef(health_task, StartHealthTask, osPriorityLow, 0, 128);
   health_taskHandle = osThreadCreate(osThread(health_task), NULL);
+
+  /* definition and creation of led_task */
+  osThreadDef(led_task, StartLedTask, osPriorityLow, 0, 128);
+  led_taskHandle = osThreadCreate(osThread(led_task), NULL);
 
   /* USER CODE BEGIN RTOS_THREADS */
   /* add threads, ... */
@@ -271,6 +277,48 @@ void StartHealthTask(void const * argument)
     osDelay(20);
   }
   /* USER CODE END StartHealthTask */
+}
+
+/* USER CODE BEGIN Header_StartLedTask */
+/**
+* @brief Function implementing the led_task thread.
+* @param argument: Not used
+* @retval None
+*/
+/* USER CODE END Header_StartLedTask */
+void StartLedTask(void const * argument)
+{
+  /* USER CODE BEGIN StartLedTask */
+  uint8_t duty = 0;        // 当前亮度 0~20
+  int8_t  dir = 1;         // 呼吸方向（亮→灭 / 灭→亮）
+  uint8_t pwm_cnt = 0;     // 20ms 周期内的位置
+  /* Infinite loop */
+  for(;;)
+  {
+#ifdef BOARD_GIMBAL
+    uint8_t fault = !can_comm_ok;   // 云台：CAN 通信异常
+#else
+    uint8_t fault = motor_fault;    // 底盘：电机异常
+#endif
+    if (fault)
+    {
+      /* 软件 PWM：亮 duty/20，灭 (20-duty)/20 */
+      HAL_GPIO_WritePin(GPIOC, GPIO_PIN_13, (pwm_cnt < duty) ? GPIO_PIN_RESET : GPIO_PIN_SET);
+      pwm_cnt++;
+      if (pwm_cnt >= 20)            // 一个 PWM 周期结束
+      {
+        pwm_cnt = 0;
+        duty += dir;                // 亮度调一级
+        if (duty >= 20 || duty == 0) dir = -dir;   // 到头反向
+      }
+    }
+    else
+    {
+      HAL_GPIO_WritePin(GPIOC, GPIO_PIN_13, GPIO_PIN_SET);  // 正常：灭
+    }
+    osDelay(1);                     // 1ms 节拍（PWM 周期 20ms，20 级亮度）
+  }
+  /* USER CODE END StartLedTask */
 }
 
 /* Private application code --------------------------------------------------*/
