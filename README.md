@@ -1,109 +1,84 @@
-# 26 电控招新暑期任务
+# 26电控招新暑期大任务 —— 模拟 RM 步兵控制链路
 
-本仓库用于完成 26 电控招新暑期任务。任务要求已整理如下，原始任务书仅在本地保存，不纳入版本管理。
+基于两块 STM32F103C8T6 最小系统板，模拟 RoboMaster 步兵机器人的"云台板 + 底盘板"双板 CAN 通信控制链路：云台板采集摇杆指令，控制 360° 舵机（云台 yaw 轴），并通过 CAN 将底盘控制信息下发给底盘板；底盘板解析指令，驱动直流减速电机（底盘轮子）完成速度闭环。
 
-## 任务概览
+## 硬件结构
 
-任务一要求使用两块 STM32F103C8T6 模拟 RM 步兵机器人的云台板与底盘板控制链路：
+| 模块 | 云台板 | 底盘板 |
+|---|---|---|
+| 主控 | STM32F103C8T6 | STM32F103C8T6 |
+| CAN 通信 | TJA1050（PA11/PA12） | TJA1050（PA11/PA12） |
+| 摇杆 | ADC1 CH0/CH1（PA0/PA1，DMA 采样） | - |
+| 舵机 | TIM1_CH1（PA8）50Hz PWM | - |
+| 电机 | - | TIM1_CH1（PA8）20kHz PWM + TB6612（PB12/PB13 方向，PA1 STBY） |
+| 编码器 | - | TIM3 CH1/CH2（PA6/PA7，4 倍频 44 计数/圈） |
+| OLED | - | I2C1（PB6/PB7），SSD1306 128x64 |
+| 呼吸灯 | PC13（CAN 异常） | PC13（电机异常） |
 
-- 云台端读取摇杆，控制 360 度舵机，并通过 CAN 向底盘端发送目标转速。
-- 底盘端解析霍尔编码器反馈，以速度环闭环控制直流减速电机。
-- 底盘端 OLED 显示舵机和电机的目标转速、实际转速、在线状态及板间通信状态。
-- CAN 或电机异常时，对应板载 LED 显示呼吸灯效果。
-- 必须使用 FreeRTOS；两块板共用同一工程，通过条件编译区分；代码按硬件层、中间层、应用层组织。
+## 软件架构（三层分层）
 
-任务二要求理解乌龟步兵的云台、底盘、发射机构、板间通信、操控逻辑、上下位机通信，以及 PID、前馈 PID、滤波和斜坡算法，为答辩提问做准备。
+```
+application/   应用层（预留）
+components/    中间层：协议、CAN 收发、OLED 驱动（双板共用，条件编译区分）
+boards/        硬件层：CubeMX 生成（chassis/ 与 gimbal/ 两个工程目录）
+```
+
+双板共用同一套 `components/` 源码，通过 `BOARD_GIMBAL` / `BOARD_CHASSIS` 编译宏区分板级差异（如 CAN 接收过滤器 ID、呼吸灯异常源）。
+
+## FreeRTOS 任务设计
+
+| 任务 | 优先级 | 周期/触发 | 云台板 | 底盘板 | 职责 |
+|---|---|---|---|---|---|
+| motor_task | High | 10ms | - | ✅ | 编码器测速 + PID 闭环 + TB6612 输出 |
+| can_recv_task | AboveNormal | 队列阻塞 | ✅ | ✅ | CAN 帧解析 → 共享变量 |
+| input_task | Normal | 10ms | ✅ | - | 摇杆采样/映射 + 舵机 PWM 输出 |
+| can_send_task | Normal / BelowNormal | 5ms / 10ms | ✅ | ✅ | 周期打包发送协议帧 |
+| health_task | Low | 20ms | ✅ | ✅ | 通信超时判定 + 电机异常判定 |
+| led_task | Low | 1ms | ✅ | ✅ | 软件 PWM 呼吸灯 |
+| display_task | Low | 100ms | - | ✅ | OLED 状态显示 |
+
+任务间数据共享采用 **volatile 共享变量**（控制类数据，只要最新值）+ **FreeRTOS 队列**（CAN 原始帧，每帧都要处理）。
+
+## 板间通信方案（CAN 1Mbps）
+
+- 标准帧，DLC=8，小端序，CRC-8（多项式 0x07）校验覆盖前 7 字节
+- 云台 → 底盘：`0x101` 控制帧，5ms 周期
+  - [0-1] 电机目标速度（±1000 RPM）、[2-3] 舵机目标转速、[4] 序号、[5] 状态字节、[6] 版本
+- 底盘 → 云台：`0x201` 反馈帧，10ms 周期
+  - [0-1] 指令回显、[2-3] 电机实际转速、[4] 序号、[5] 状态字节、[6] 版本
+- 状态字节：控制帧位 0 舵机在线 / 位 1 板间通信；反馈帧位 0 电机在线 / 位 1 板间通信 / 位 2 电机异常
+- 接收侧硬件过滤器只放行本板关心的帧，中断中仅搬数据（`xQueueSendFromISR`），解析放任务
+
+## 核心算法
+
+- **增量式 PID 速度环**（底盘电机）：`Δu = Kp(e−e₁) + Ki·e + Kd(e−2e₁+e₂)`，输出限幅 ±1000，参数待真机整定
+- **M 法测速**：10ms 窗口内编码器计数差 × 6000 ÷ 44 换算 RPM（44 = 11 线 × 4 倍频）
+- **摇杆映射**：12 位 ADC 减中点 2048 → 死区 ±50 滤抖动 → 线性映射 ±1000 RPM
+- **软件 PWM 呼吸灯**：PC13 无硬件 PWM 通道，1ms 节拍 GPIO 翻转模拟 20 级亮度三角波
+- **CRC-8 校验**：每帧校验，防总线干扰导致的脏数据
+
+## 构建与烧录
+
+```bash
+# 云台板
+cmake --preset gimbal && cmake --build build/Debug
+# 底盘板
+cmake --preset chassis && cmake --build build/Debug
+```
 
 ## 开发环境与工具链
 
 - **STM32CubeMX 6.17**：外设图形化配置，生成 CMake 工程（Toolchain 选 `CMake`）
-- **CLion 2026.2**：编辑、编译、调试一体；使用内置 CMake + Ninja 生成器，工具链指向 Arm GNU Toolchain
+- **CLion 2026.2**：编辑、编译、调试一体；使用内置 CMake + Ninja 生成器
 - **ARM GCC 12.2.1**（arm-none-eabi）：交叉编译器，经各板目录下的 `cmake/gcc-arm-none-eabi.cmake` 工具链文件接入
-- **OpenOCD 0.12.0 + ST-LINK**：烧录与调试，通过 CLion 的 "OpenOCD Download & Run" 运行配置调用，配置文件为各板目录下的 `openocd.cfg`（target 为 `stm32f1x.cfg`）
+- **OpenOCD 0.12.0 + ST-LINK**：烧录与调试，配置文件为各板目录下的 `openocd.cfg`
 
-CLion 使用自带的 CMake 和 Ninja；ARM GCC 与 OpenOCD 需要能够被 CLion 的工具链环境找到。各板的 `CMakePresets.json` 已指定交叉编译工具链，使用 preset 时不需要重复传入工具链参数。
+## 开发记录
 
-## 实现思路
+每个功能模块独立 commit 并推送（见 Git 历史），便于回溯与评审。
 
-### 工程分层
+## 改进空间
 
-仓库采用双板单工程结构：硬件层由 CubeMX 按板分别生成，共享组件集中维护，应用层按公共、云台和底盘职责拆分：
-
-```text
-boards/
-|-- gimbal/         # 云台板 CubeMX 工程（.ioc、Core、Drivers、cmake、openocd.cfg）
-`-- chassis/        # 底盘板 CubeMX 工程（同上）
-components/         # 中间层：PID、滤波、斜坡、CAN 协议、在线检测（两板共用）
-application/
-|-- common/         # 两板公共的应用接口与状态定义
-|-- gimbal/         # 摇杆、舵机及云台通信任务
-`-- chassis/        # 电机、编码器、OLED 及底盘通信任务
-docs/               # 接线图、调参记录等文档
-```
-
-使用 `BOARD_GIMBAL` 和 `BOARD_CHASSIS` 编译宏选择板级初始化和应用任务。板型宏由 CMake 构建目标定义，条件编译限制在板级入口和少量差异点；公共协议和算法只保留一份。
-
-首个阶段从 `boards/gimbal` 独立配置和编译。底盘工程落位后再增加顶层 CMake，每次配置只选择一块板并使用独立构建目录，避免两个 CubeMX 生成工程的内部目标重名。
-
-### FreeRTOS 任务
-
-建议先按职责划分，后续再根据实测负载调整周期和优先级：
-
-| 任务 | 建议周期 | 主要职责 |
-| --- | ---: | --- |
-| `input_task` | 5-10 ms | ADC 采样、滤波、死区处理、摇杆到目标速度映射 |
-| `motor_task` | 1-5 ms | 读取编码器速度、斜坡限幅、PID 计算、更新 TB6612 PWM |
-| `can_task` | 事件驱动 | 从队列解析报文、发送控制量/状态和心跳 |
-| `health_task` | 10-20 ms | 根据最后接收时间判断 CAN、电机和舵机链路状态 |
-| `display_task` | 100 ms | 刷新 OLED，避免显示刷新阻塞控制环 |
-| `led_task` | 10-20 ms | 正常状态指示与异常呼吸灯 |
-
-CAN 接收中断只完成取帧、时间戳记录和入队，解析与业务处理放到任务中。周期任务使用 `vTaskDelayUntil` 保持稳定周期。
-
-### 双板通信
-
-在 `can_protocol` 中集中定义报文 ID、字段、单位、字节序和超时，不直接传输 C 结构体。一个最小方案包括：
-
-- 云台到底盘：电机目标转速、舵机目标转速、序号和云台状态。
-- 底盘到云台：电机目标/实际转速、电机在线状态、序号和底盘状态。
-- 双向心跳或周期状态帧：用于板间在线检测，超时立即将输出置为安全值。
-
-两端接入同一 CAN 总线并共地，只在总线两端放置 120 欧终端电阻。先用固定报文验证波特率、引脚映射和收发，再接入控制任务。
-
-### 控制链路
-
-1. 对摇杆 ADC 做中值/低通滤波、中心校准和死区处理，再映射成有符号目标速度。
-2. 对目标速度增加斜坡限制，降低突然换向造成的电流冲击。
-3. 根据编码器每个控制周期的计数差计算实际转速；换算必须包含编码器线数、倍频系数和减速比。
-4. 固定周期执行速度 PID，输出限幅后转换成 TB6612 的方向和 PWM 占空比，并实现积分限幅或抗饱和。
-5. 先完成开环方向和编码器极性检查，再闭环整定 PID，最后加入断联保护和 OLED。
-
-普通三线 360 度舵机通常没有反馈，脉宽只能控制方向和速度，无法确认舵机本体是否真实在线。因此 OLED 中的“舵机在线”应明确表示云台控制/遥测报文未超时；若所发舵机带独立反馈线，再改为实际反馈判定。
-
-## 实施阶段与提交建议
-
-每完成一个可独立验证的阶段就提交，不要在最后一次性提交全部代码：
-
-1. `chore: scaffold dual-board project skeleton with gimbal cubemx config`
-2. `chore: add chassis cubemx base configuration`
-3. `feat: add board selection and freertos task skeleton`
-4. `feat: add can protocol and heartbeat`
-5. `feat: add joystick input and servo control`
-6. `feat: add encoder speed measurement`
-7. `feat: close motor speed loop with pid`
-8. `feat: add oled status page and fault indicators`
-9. `docs: document design parameters and test results`
-
-提交前执行 `git status` 和 `git diff --check`，确认没有构建产物、临时文件或密钥。推送到 GitHub 后将仓库设为 public，并检查网页上能看到完整的阶段性提交记录。
-
-## 待记录参数
-
-硬件到手并完成单模块测试后，在此补充可复现的配置：
-
-- STM32CubeMX 和 HAL/FreeRTOS 版本（当前：CubeMX 6.17.0，FW_F1 V1.8.7）
-- 两种板型的条件编译配置方式
-- CAN 波特率、时序、报文表和超时时间
-- 舵机 PWM 频率、中位脉宽和速度映射范围
-- 编码器线数、倍频、减速比和转速计算公式
-- 电机控制周期、PID 参数、输出限幅和斜坡参数
-- 接线图、供电方式、公共地和终端电阻位置
+- PID 参数真机整定（当前 Kp/Ki/Kd 初值为 0）
+- 舵机在线状态目前为 PWM 使能软标志，可加电流/堵转检测
+- OLED 中文显示（需 16x16 字库）
