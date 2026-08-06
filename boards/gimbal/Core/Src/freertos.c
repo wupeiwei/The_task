@@ -30,6 +30,8 @@
 #include "adc.h"          // hadc1 句柄声明在这（adc.c 里定义）
 #include "can_bus.h"      // can_bus_send 声明 + can_rx_queue extern
 #include "tim.h"          // htim1、HAL_TIM_PWM_Start
+#include "dma.h"      // hdma_adc1 句柄声明
+extern DMA_HandleTypeDef hdma_adc1;   // 定义在adc.c，adc.h漏声明（CubeMX生成缺口）
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
@@ -56,10 +58,15 @@ volatile int16_t servo_target_speed = 0;   // 舵机目标转速（底盘：recv
 volatile int16_t motor_current_speed = 0;  // 电机实际转速（云台：recv写）
 volatile uint32_t last_rx_tick = 0;        // 最近收到有效帧的时间（心跳用）
 volatile uint8_t can_comm_ok = 0;          //状态字节和LED
-volatile uint16_t adc_buf[2];   // DMA 持续写入的摇杆原始值（CH0/CH1）
+volatile uint16_t adc_buf[2] = {2048, 2048};   // DMA 持续写入的摇杆原始值（CH0/CH1）
 volatile uint8_t servo_online = 0;   // 舵机在线（云台）
 volatile uint8_t motor_online = 0;   // 电机在线（底盘）
 volatile uint8_t motor_fault  = 0;   // 电机异常（底盘）
+volatile uint8_t  last_rx_seq = 0;        // 上次收到的帧序号
+volatile uint32_t dup_cnt = 0;            // 重复帧计数
+volatile uint32_t drop_cnt = 0;           // 丢帧计数
+volatile int16_t  motor_echo = 0;         // 指令回显
+volatile uint8_t  chassis_motor_fault = 0;// 远端电机异常
 /* USER CODE END Variables */
 osThreadId can_recv_taskHandle;
 osThreadId input_taskHandle;
@@ -174,17 +181,32 @@ void StartCanRecvTask(void const * argument)
 #ifdef BOARD_GIMBAL
       if (parse_feedback_frame(rx_data, &ff))// 解析：CRC 不过 parse 返回 0，直接丢
       {
-        motor_current_speed = ff.motor_current_speed;  // 存共享变量
-        last_rx_tick = HAL_GetTick(); // 心跳的时间戳，用来算超时
+        if (ff.version != 1) { /* 版本不符，整帧丢弃 */ }
+        else if (ff.number == last_rx_seq) { dup_cnt++; }  // 重复帧：不刷新心跳
+        else {
+          motor_current_speed = ff.motor_current_speed;  // 存共享变量
+          motor_echo = ff.motor_target_speed_echo;              // 回显（诊断对比用）
+          chassis_motor_fault = (ff.chassis_state & 0x04) ? 1 : 0;  // 远端电机异常
+          if ((uint8_t)(ff.number - last_rx_seq) > 1) drop_cnt++;  // 跳变：丢帧计数
+          last_rx_seq = ff.number;                              // 记录本次序号
+          last_rx_tick = HAL_GetTick(); // 心跳的时间戳，用来算超时
+        }
       }
 #else
       if (parse_control_frame(rx_data, &cf))//依旧是解析校验crc
       {
-        motor_target_speed = cf.motor_target_speed;
-        servo_target_speed = cf.servo_target_speed;
-        last_rx_tick = HAL_GetTick();//依旧同上
+        if (cf.version != 1) { /* 版本不符，整帧丢弃 */ }
+        else if (cf.number == last_rx_seq) { dup_cnt++; }  // 重复帧：不刷新心跳
+        else {
+          motor_target_speed = cf.motor_target_speed;
+          servo_target_speed = cf.servo_target_speed;
+          if ((uint8_t)(cf.number - last_rx_seq) > 1) drop_cnt++;  // 跳变：丢帧计数
+          last_rx_seq = cf.number;                              // 记录本次序号
+          last_rx_tick = HAL_GetTick();//依旧同上
+        }
       }
 #endif
+
     }
   }
   /* USER CODE END StartCanRecvTask */
@@ -201,6 +223,8 @@ void StartInputTask(void const * argument)
 {
   /* USER CODE BEGIN StartInputTask */
   HAL_ADC_Start_DMA(&hadc1, (uint32_t*)adc_buf, 2);   // 启动 DMA 采样（只启动这一次）
+  osDelay(5);
+  __HAL_DMA_DISABLE_IT(&hdma_adc1, DMA_IT_HT | DMA_IT_TC);   // DMA 静默搬运，任务轮询读
   HAL_TIM_PWM_Start(&htim1, TIM_CHANNEL_1);   // 启动舵机 PWM（50Hz）
   servo_online = 1;       //舵机在线
   /* Infinite loop */
@@ -232,11 +256,13 @@ void StartInputTask(void const * argument)
 * @retval None
 */
 /* USER CODE END Header_StartCanSendTask */
+
 void StartCanSendTask(void const * argument)
 {
   /* USER CODE BEGIN StartCanSendTask */
   uint8_t tx_data[8];
   control_frame_t cf = {0};
+  static uint8_t tx_seq = 0;              // 序号计数器：函数内 static，只初始化一次
 
   /* Infinite loop */
   for(;;)
@@ -248,10 +274,14 @@ void StartCanSendTask(void const * argument)
     cf.gimbal_state = 0;
     cf.gimbal_state |= servo_online ? 0x01 : 0x00;   // 位0：舵机在线
     cf.gimbal_state |= can_comm_ok ? 0x02 : 0x00;    // 位1：板间通信
+    cf.number = tx_seq++;                   // ① 先填序号（自然回绕）
     /* 2. pack 成 8 字节 */
     pack_control_frame(&cf, tx_data);
     /* 3. 发出去 */
     can_bus_send(CAN_CTRL_FRAME_ID, tx_data);
+
+
+
     osDelay(5);                         // 5ms 周期（协议定的）
   }
   /* USER CODE END StartCanSendTask */

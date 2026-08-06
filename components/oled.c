@@ -1,5 +1,6 @@
 #include "oled.h"
 #include "i2c.h"
+#include <string.h>
 
 /* SSD1306 I2C 地址：0x3C（7 位）→ HAL 里左移一位 0x78 */
 #define OLED_ADDR  0x78
@@ -36,7 +37,7 @@ void oled_init(void)
         0xD3, 0x00,       /* 显示偏移 0 */
         0x40,             /* 起始行 0 */
         0x8D, 0x14,       /* 电荷泵开（I2C 版必须） */
-        0x20, 0x00,       /* 内存模式：水平 */
+        0x20, 0x02,       /* 内存模式：页（匹配 oled_set_pos 的 0xB0 页定位命令） */
         0xA1,             /* 段重映射（右对齐） */
         0xC8,             /* COM 扫描方向 */
         0xDA, 0x12,       /* COM 引脚配置 */
@@ -184,8 +185,15 @@ void oled_show_num(uint8_t page, uint8_t col, int32_t num, uint8_t len)
     char buf[12];
     uint8_t i = 11;
     buf[i--] = '\0';
-    if (num < 0) { buf[i--] = '0' - (num % 10); num /= 10; }  /* 负号处理 */
-    do { buf[i--] = '0' + (num % 10); num /= 10; } while (num > 0);
-    if (buf[i+1] != '-' && i < 10 && num < 0) buf[i--] = '-';  /* 兼容 */
+    uint32_t n;
+    if (num < 0)
+    {
+        buf[i--] = '-';                 /* 负号先占位 */
+        n = (uint32_t)(-(int64_t)num);  /* int64 中间量防 INT32_MIN 取负溢出 */
+    }
+    else
+        n = (uint32_t)num;
+    do { buf[i--] = '0' + (n % 10); n /= 10; } while (n > 0);  /* 无符号转换，不依赖负数取余 */
+    while (i > 0 && strlen(&buf[i + 1]) < len) buf[i--] = ' '; /* 不足 len 前补空格（右对齐） */
     oled_show_string(page, col, &buf[i + 1]);
 }

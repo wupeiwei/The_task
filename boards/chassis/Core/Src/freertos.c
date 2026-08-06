@@ -61,6 +61,9 @@ volatile uint8_t can_comm_ok = 0;          //状态字节和LED
 volatile uint8_t servo_online = 0;   // 舵机在线（云台）
 volatile uint8_t motor_online = 0;   // 电机在线（底盘）
 volatile uint8_t motor_fault  = 0;   // 电机异常（底盘）
+volatile uint8_t  last_rx_seq = 0;        // 上次收到的帧序号
+volatile uint32_t dup_cnt = 0;            // 重复帧计数
+volatile uint32_t drop_cnt = 0;           // 丢帧计数
 /* USER CODE END Variables */
 osThreadId motor_taskHandle;
 osThreadId can_recv_taskHandle;
@@ -185,8 +188,11 @@ void StartMotorTask(void const * argument)
     last_cnt = cnt;
     int32_t rpm = diff * 6000 / 44;                // diff/44圈 ÷ 0.01s × 60
 
+    //PID 目标：失联时按 0 处理（即使 health_task 还没跑到，本周期就停）
+    int16_t target = can_comm_ok ? motor_target_speed : 0;
+
     //增量式 PID
-    float err = (float)(motor_target_speed - rpm); // 目标 − 实际
+    float err = (float)(target - rpm);     // 用 target 替换原 motor_target_speed
     u += kp * (err - e1) + ki * err + kd * (err - 2*e1 + e2);
     e2 = e1;
     e1 = err;
@@ -241,16 +247,30 @@ void StartCanRecvTask(void const * argument)
 #ifdef BOARD_GIMBAL
       if (parse_feedback_frame(rx_data, &ff))// 解析：CRC 不过 parse 返回 0，直接丢
       {
-        motor_current_speed = ff.motor_current_speed;  // 存共享变量
-        last_rx_tick = HAL_GetTick(); // 心跳的时间戳，用来算超时
+        if (ff.version != 1) { /* 版本不符，整帧丢弃 */ }
+        else if (ff.number == last_rx_seq) { dup_cnt++; }  // 重复帧：不刷新心跳
+        else {
+          motor_current_speed = ff.motor_current_speed;  // 存共享变量
+          motor_echo = ff.motor_target_speed_echo;              // 回显（诊断对比用）
+          chassis_motor_fault = (ff.chassis_state & 0x04) ? 1 : 0;  // 远端电机异常
+          if ((uint8_t)(ff.number - last_rx_seq) > 1) drop_cnt++;  // 跳变：丢帧计数
+          last_rx_seq = ff.number;                              // 记录本次序号
+          last_rx_tick = HAL_GetTick(); // 心跳的时间戳，用来算超时
+        }
       }
 #else
       if (parse_control_frame(rx_data, &cf))//依旧是解析校验crc
       {
-        motor_target_speed = cf.motor_target_speed;
-        servo_target_speed = cf.servo_target_speed;
-        servo_online = (cf.gimbal_state & 0x01) ? 1 : 0;   // 位0：舵机在线
-        last_rx_tick = HAL_GetTick();//依旧同上
+        if (cf.version != 1) { /* 版本不符，整帧丢弃 */ }
+        else if (cf.number == last_rx_seq) { dup_cnt++; }  // 重复帧：不刷新心跳
+        else {
+          motor_target_speed = cf.motor_target_speed;
+          servo_target_speed = cf.servo_target_speed;
+          servo_online = (cf.gimbal_state & 0x01) ? 1 : 0;   // 位0：舵机在线
+          if ((uint8_t)(cf.number - last_rx_seq) > 1) drop_cnt++;  // 跳变：丢帧计数
+          last_rx_seq = cf.number;                              // 记录本次序号
+          last_rx_tick = HAL_GetTick();//依旧同上
+        }
       }
 #endif
     }
@@ -270,6 +290,7 @@ void StartCanSendTask(void const * argument)
   /* USER CODE BEGIN StartCanSendTask */
   uint8_t tx_data[8];
   feedback_frame_t ff = {0};
+  static uint8_t tx_seq = 0;              // 序号计数器：函数内 static，只初始化一次
 
   /* Infinite loop */
   for(;;)
@@ -281,9 +302,14 @@ void StartCanSendTask(void const * argument)
     ff.chassis_state |= motor_online ? 0x01 : 0x00;  // 位0：电机在线
     ff.chassis_state |= can_comm_ok ? 0x02 : 0x00;   // 位1：板间通信
     ff.chassis_state |= motor_fault ? 0x04 : 0x00;   // 位2：电机异常
+    ff.number = tx_seq++;                 // ① 先填序号（自然回绕）
 
     pack_feedback_frame(&ff, tx_data);
+
     can_bus_send(CAN_FB_FRAME_ID, tx_data);
+
+
+
     osDelay(10);
   }
   /* USER CODE END StartCanSendTask */
@@ -303,7 +329,10 @@ void StartHealthTask(void const * argument)
   for(;;)
   {
     if (HAL_GetTick() - last_rx_tick > 100)  // 100ms 没收到有效帧
+    {
       can_comm_ok = 0;                     // 板间通信异常
+      motor_target_speed = 0;
+    }
     else
       can_comm_ok = 1;                     // 正常
 
