@@ -56,6 +56,9 @@ volatile int16_t servo_target_speed = 0;   // 舵机目标转速（底盘：recv
 volatile int16_t motor_current_speed = 0;  // 电机实际转速（云台：recv写）
 volatile uint32_t last_rx_tick = 0;        // 最近收到有效帧的时间（心跳用）
 volatile uint8_t can_comm_ok = 0;          //状态字节和LED
+volatile uint8_t servo_online = 0;   // 舵机在线（云台）
+volatile uint8_t motor_online = 0;   // 电机在线（底盘）
+volatile uint8_t motor_fault  = 0;   // 电机异常（底盘）
 /* USER CODE END Variables */
 osThreadId motor_taskHandle;
 osThreadId can_recv_taskHandle;
@@ -162,6 +165,7 @@ void StartMotorTask(void const * argument)
 {
   /* USER CODE BEGIN StartMotorTask */
   HAL_TIM_PWM_Start(&htim1, TIM_CHANNEL_1);       // 启动 PWM 输出（PA8 开始出波形）
+  motor_online = 1;
   HAL_TIM_Encoder_Start(&htim3, TIM_CHANNEL_ALL); // 启动编码器计数
 
   float kp = 0.0f, ki = 0.0f, kd = 0.0f;           //
@@ -263,13 +267,18 @@ void StartCanSendTask(void const * argument)
   /* USER CODE BEGIN StartCanSendTask */
   uint8_t tx_data[8];
   feedback_frame_t ff = {0};
-  ff.version = 1;                       // 协议版本号
 
   /* Infinite loop */
   for(;;)
   {
     ff.motor_target_speed_echo = motor_target_speed;
     ff.motor_current_speed = motor_current_speed;
+    ff.version = 1;                       // 协议版本号
+    ff.chassis_state = 0;
+    ff.chassis_state |= motor_online ? 0x01 : 0x00;  // 位0：电机在线
+    ff.chassis_state |= can_comm_ok ? 0x02 : 0x00;   // 位1：板间通信
+    ff.chassis_state |= motor_fault ? 0x04 : 0x00;   // 位2：电机异常
+
     pack_feedback_frame(&ff, tx_data);
     can_bus_send(CAN_FB_FRAME_ID, tx_data);
     osDelay(10);
@@ -294,6 +303,15 @@ void StartHealthTask(void const * argument)
       can_comm_ok = 0;                     // 板间通信异常
     else
       can_comm_ok = 1;                     // 正常
+
+    /* 电机异常：目标≠0 且实际≈0 持续 500ms（20ms×25次） */
+    static uint8_t motor_fault_cnt;
+    if (motor_target_speed != 0 && (motor_current_speed > -30 && motor_current_speed < 30))
+      motor_fault_cnt++;
+    else
+      motor_fault_cnt = 0;
+    if (motor_fault_cnt > 25) motor_fault = 1;
+    else if (motor_target_speed == 0) motor_fault = 0;   // 目标归零自动恢复
     osDelay(20);
   }
   /* USER CODE END StartHealthTask */

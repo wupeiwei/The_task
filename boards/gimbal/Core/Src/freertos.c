@@ -29,6 +29,7 @@
 #include "can_protocol.h"
 #include "adc.h"          // hadc1 句柄声明在这（adc.c 里定义）
 #include "can_bus.h"      // can_bus_send 声明 + can_rx_queue extern
+#include "tim.h"          // htim1、HAL_TIM_PWM_Start
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
@@ -56,6 +57,9 @@ volatile int16_t motor_current_speed = 0;  // 电机实际转速（云台：recv
 volatile uint32_t last_rx_tick = 0;        // 最近收到有效帧的时间（心跳用）
 volatile uint8_t can_comm_ok = 0;          //状态字节和LED
 volatile uint16_t adc_buf[2];   // DMA 持续写入的摇杆原始值（CH0/CH1）
+volatile uint8_t servo_online = 0;   // 舵机在线（云台）
+volatile uint8_t motor_online = 0;   // 电机在线（底盘）
+volatile uint8_t motor_fault  = 0;   // 电机异常（底盘）
 /* USER CODE END Variables */
 osThreadId can_recv_taskHandle;
 osThreadId input_taskHandle;
@@ -187,11 +191,12 @@ void StartCanRecvTask(void const * argument)
 * @retval None
 */
 /* USER CODE END Header_StartInputTask */
-//摇杆采样输入函数
 void StartInputTask(void const * argument)
 {
   /* USER CODE BEGIN StartInputTask */
   HAL_ADC_Start_DMA(&hadc1, (uint32_t*)adc_buf, 2);   // 启动 DMA 采样（只启动这一次）
+  HAL_TIM_PWM_Start(&htim1, TIM_CHANNEL_1);   // 启动舵机 PWM（50Hz）
+  servo_online = 1;       //舵机在线
   /* Infinite loop */
   for(;;)
   {
@@ -207,7 +212,8 @@ void StartInputTask(void const * argument)
     x_raw -= 2048;
     if (x_raw > -50 && x_raw < 50) x_raw = 0;
     servo_target_speed = (int16_t)(x_raw * 1000 / 2048); // 舵机目标转速
-
+    int32_t pulse = 1500 + servo_target_speed / 2;
+    __HAL_TIM_SET_COMPARE(&htim1, TIM_CHANNEL_1, (uint32_t)pulse);
     osDelay(10);
   }
   /* USER CODE END StartInputTask */
@@ -225,13 +231,17 @@ void StartCanSendTask(void const * argument)
   /* USER CODE BEGIN StartCanSendTask */
   uint8_t tx_data[8];
   control_frame_t cf = {0};
-  cf.version = 1; //协议版本
+
   /* Infinite loop */
   for(;;)
   {
     /* 1. 读共享变量，填协议结构体 */
     cf.motor_target_speed = motor_target_speed;        //  摇杆指令
     cf.servo_target_speed = servo_target_speed;        //  舵机指令（同上）
+    cf.version = 1; //协议版本
+    cf.gimbal_state = 0;
+    cf.gimbal_state |= servo_online ? 0x01 : 0x00;   // 位0：舵机在线
+    cf.gimbal_state |= can_comm_ok ? 0x02 : 0x00;    // 位1：板间通信
     /* 2. pack 成 8 字节 */
     pack_control_frame(&cf, tx_data);
     /* 3. 发出去 */
