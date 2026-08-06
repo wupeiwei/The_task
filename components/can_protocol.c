@@ -13,13 +13,13 @@ uint8_t crc8(const uint8_t *data, size_t len)
         crc ^= data[i];
         for (bit = 0; bit < 8; bit++)
         {
-            if (crc & 0x01)//只取crc的最低位，其余位清0，结果只会是0或1，用作if条件判断
+            if (crc & 0x80)//修复后：看最高位
             {
-                crc = (crc >> 1) ^ 0x07;
+                crc = (crc << 1) ^ 0x07;
             }
             else
             {
-                crc = crc >> 1;
+                crc = crc << 1;
             }
         }
     }

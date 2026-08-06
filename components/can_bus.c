@@ -12,6 +12,8 @@
 #endif
 //如果这里不定义，下面 can_bus_init 里 CAN_RX_ID 会编译报错
 
+uint32_t tx_fail_cnt = 0;   // 发送失败计数（诊断用）
+
 
 void can_bus_init(void)
 {
@@ -42,7 +44,11 @@ void can_bus_send(uint16_t id, uint8_t *data)
     hdr.RTR = CAN_RTR_DATA;//好比是信的类型，数据帧类型
     hdr.DLC   = 8;//好比是信的页数，8字节
     uint32_t mailbox;//好比回执单号，API签名要求有这个参数
-    HAL_CAN_AddTxMessage(&hcan, &hdr, data, &mailbox);//这步好比投信出去
+
+    if (HAL_CAN_AddTxMessage(&hcan, &hdr, data, &mailbox) != HAL_OK)
+    {
+        tx_fail_cnt++;     // 发送失败计数诊断用
+    }
 }
 
 
@@ -54,6 +60,9 @@ void HAL_CAN_RxFifo0MsgPendingCallback(CAN_HandleTypeDef *hcan)
 
     /* 从 FIFO0 取出整帧（8 字节） */
     HAL_CAN_GetRxMessage(hcan, CAN_RX_FIFO0, &hdr, rx_data);
+
+    // 启动竞态防御：队列未创建前丢弃帧（此时系统未真正启动，丢帧无影响）修复竞态
+    if (can_rx_queue == NULL) return;
 
     /* 整帧入队（FromISR 版本：中断里专用，不阻塞） */
     BaseType_t need_yield = pdFALSE;
