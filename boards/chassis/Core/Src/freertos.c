@@ -27,7 +27,9 @@
 /* USER CODE BEGIN Includes */
 #include "queue.h"
 #include "can_protocol.h"
-#include "../../../../components/can_protocol.h"
+#include "tim.h"     // TIM3->CNT、htim1、HAL_TIM_PWM_Start
+#include "gpio.h"    // PB12/PB13 方向脚
+#include "can_bus.h" // can_bus_send 声明 + can_rx_queue extern
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
@@ -159,10 +161,50 @@ void MX_FREERTOS_Init(void) {
 void StartMotorTask(void const * argument)
 {
   /* USER CODE BEGIN StartMotorTask */
+  HAL_TIM_PWM_Start(&htim1, TIM_CHANNEL_1);       // 启动 PWM 输出（PA8 开始出波形）
+  HAL_TIM_Encoder_Start(&htim3, TIM_CHANNEL_ALL); // 启动编码器计数
+
+  float kp = 0.0f, ki = 0.0f, kd = 0.0f;           //
+  float e1 = 0.0f, e2 = 0.0f;                      // 历史误差（增量式要存两个）
+  float u  = 0.0f;
+
+  uint16_t last_cnt = 0;
+
   /* Infinite loop */
   for(;;)
   {
-    osDelay(1);
+    //测速：10ms 窗口计数差 → RPM（44 计数/圈）
+    uint16_t cnt = __HAL_TIM_GET_COUNTER(&htim3);
+    int16_t diff = (int16_t)(cnt - last_cnt);      // int16 相减，溢出自动回绕
+    last_cnt = cnt;
+    int32_t rpm = diff * 6000 / 44;                // diff/44圈 ÷ 0.01s × 60
+
+    //增量式 PID
+    float err = (float)(motor_target_speed - rpm); // 目标 − 实际
+    u += kp * (err - e1) + ki * err + kd * (err - 2*e1 + e2);
+    e2 = e1;
+    e1 = err;
+
+    //限幅 ±1000 → 占空比 → 方向
+    if (u > 1000.0f)  u = 1000.0f;
+    if (u < -1000.0f) u = -1000.0f;
+
+    int32_t pwm = (int32_t)(u * 3599 / 1000);      // u=1000 → 3599（100%）
+    if (pwm < 0) pwm = -pwm;
+    __HAL_TIM_SET_COMPARE(&htim1, TIM_CHANNEL_1, (uint32_t)pwm);
+
+    if (u >= 0) {                                  // 正转/停：AIN1=1 AIN2=0
+      HAL_GPIO_WritePin(GPIOB, GPIO_PIN_12, GPIO_PIN_SET);
+      HAL_GPIO_WritePin(GPIOB, GPIO_PIN_13, GPIO_PIN_RESET);
+    } else {                                       // 反转：AIN1=0 AIN2=1
+      HAL_GPIO_WritePin(GPIOB, GPIO_PIN_12, GPIO_PIN_RESET);
+      HAL_GPIO_WritePin(GPIOB, GPIO_PIN_13, GPIO_PIN_SET);
+    }
+
+    //反馈：实际转速给 can_send_task 发反馈帧 
+    motor_current_speed = (int16_t)rpm;
+
+    osDelay(10);
   }
   /* USER CODE END StartMotorTask */
 }
