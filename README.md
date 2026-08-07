@@ -32,13 +32,13 @@ boards/             硬件层：CubeMX 生成（chassis/ 与 gimbal/ 两个外�
 
 | 任务 | 优先级 | 周期/触发 | 云台板 | 底盘板 | 职责 |
 |---|---|---|---|---|---|
-| motor_task | High | 10ms | - | ✅ | 编码器测速 + PID 闭环 + TB6612 输出 |
+| motor_task | High | 10ms | - | ✅ | 编码器测速 + PID 闭环 + TB6612 输出 + 堵转/在线判定（500ms 计数域） |
 | can_recv_task | AboveNormal | 队列阻塞 | ✅ | ✅ | CAN 帧解析 → 共享变量 |
 | input_task | Normal | 10ms | ✅ | - | 摇杆采样/映射 + 舵机 PWM 输出 |
 | can_send_task | Normal / BelowNormal | 5ms / 10ms | ✅ | ✅ | 周期打包发送协议帧 |
-| health_task | Low | 20ms | ✅ | ✅ | 通信超时判定 + 电机异常判定 |
+| health_task | Low | 20ms | ✅ | ✅ | 通信超时判定（失联清零目标） |
 | led_task | Low | 1ms | ✅ | ✅ | 软件 PWM 呼吸灯 |
-| display_task | Low | 100ms | - | ✅ | OLED 状态显示 |
+| display_task | Low | 100ms | - | ✅ | OLED 状态显示（含任务栈高水位） |
 
 任务间数据共享采用 **volatile 共享变量**（控制类数据，只要最新值）+ **FreeRTOS 队列**（CAN 原始帧，每帧都要处理）。
 
@@ -54,19 +54,22 @@ boards/             硬件层：CubeMX 生成（chassis/ 与 gimbal/ 两个外�
 
 ## 核心算法
 
-- **增量式 PID 速度环**（底盘电机）：`Δu = Kp(e−e₁) + Ki·e + Kd(e−2e₁+e₂)`，输出限幅 ±1000，参数待真机整定
-- **M 法测速**：10ms 窗口内编码器计数差 × 6000 ÷ 44 换算 RPM（44 = 11 线 × 4 倍频）
+- **增量式 PID 速度环**（底盘电机）：`Δu = Kp(e−e₁) + Ki·e + Kd(e−2e₁+e₂)`，输出限幅 ±1000，参数待真机整定；失联时强制清零 PID 累积输出与历史误差，PWM 立即归零
+- **M 法测速**：编码器计数差按真实时间窗换算 RPM（`diff × 60000 ÷ (44 × dt_ms)`，dt_ms 取 HAL_GetTick 差值，消除任务调度抖动；44 = 11 线 × 4 倍频）
+- **堵转检测（计数域）**：500ms 窗口累计编码器计数，有指令且累计 < 3 计数（≈8 RPM）判堵转——规避 10ms 窗口 136 RPM/计数的低速量化盲区；电机在线同理（窗口内有指令且有响应）
 - **摇杆映射**：12 位 ADC 减中点 2048 → 死区 ±50 滤抖动 → 线性映射 ±1000 RPM
 - **软件 PWM 呼吸灯**：PC13 无硬件 PWM 通道，1ms 节拍 GPIO 翻转模拟 20 级亮度三角波
-- **CRC-8 校验**：每帧校验，防总线干扰导致的脏数据
+- **CRC-8 校验**：标准 CRC-8/ATM（poly 0x07），校验向量 123456789 = 0xF4，防总线干扰导致的脏数据
 
 ## 构建与烧录
 
 ```bash
-# 顶层工程：同一工程按板型选择（任务书要求）
+# 在仓库根目录执行：同一工程按板型选择（任务书要求）
 cmake --preset gimbal && cmake --build build/gimbal    # 云台板 → build/gimbal/gimbal_dual.elf
 cmake --preset chassis && cmake --build build/chassis  # 底盘板 → build/chassis/gimbal_dual.elf
 ```
+
+> 注意：`gimbal`/`chassis` preset 定义在**仓库根**的 `CMakePresets.json`；各板目录（`boards/<板>/`）内的 preset 为 CubeMX 生成的 `Debug`/`Release`，供单板调试用。
 
 烧录使用各板目录下的 `openocd.cfg`（ST-LINK + OpenOCD），两板固件独立烧录。
 
