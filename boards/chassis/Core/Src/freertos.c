@@ -435,8 +435,9 @@ void StartDisplayTask(void const * argument)
     //行4：电机在线 + 异常
     sprintf(buf, "MST:%s FLT:%s", motor_online ? "ON " : "OFF", motor_fault ? "YES" : "NO ");
     oled_show_string(4, 0, buf);
-    //行6：板间通信
-    sprintf(buf, "CAN:%s", can_comm_ok ? "OK " : "ERR");
+    //行6：板间通信 + 电机任务栈水位（高水位监测：余量越小越危险）
+    uint16_t stk = uxTaskGetStackHighWaterMark(motor_taskHandle);
+    sprintf(buf, "CAN:%s STK:%3u", can_comm_ok ? "OK " : "ERR", (unsigned)stk);
     oled_show_string(6, 0, buf);
     osDelay(100);                    // 100ms 刷新（人眼够用，省 CPU）
   }
@@ -445,6 +446,24 @@ void StartDisplayTask(void const * argument)
 
 /* Private application code --------------------------------------------------*/
 /* USER CODE BEGIN Application */
+
+/* 栈溢出钩子：系统已不可信，关中断停机并点亮 LED（低电平亮）指示 */
+void vApplicationStackOverflowHook(TaskHandle_t xTask, char *pcTaskName)
+{
+    (void)xTask;
+    (void)pcTaskName;
+    __disable_irq();
+    HAL_GPIO_WritePin(GPIOC, GPIO_PIN_13, GPIO_PIN_RESET);   // LED 常亮
+    for(;;);
+}
+
+/* 内存分配失败钩子：heap 耗尽（heap_4 无碎片回收），同样停机指示 */
+void vApplicationMallocFailedHook(void)
+{
+    __disable_irq();
+    HAL_GPIO_WritePin(GPIOC, GPIO_PIN_13, GPIO_PIN_RESET);
+    for(;;);
+}
 
 /* USER CODE END Application */
 

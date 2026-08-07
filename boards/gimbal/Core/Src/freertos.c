@@ -354,5 +354,23 @@ void StartLedTask(void const * argument)
 /* Private application code --------------------------------------------------*/
 /* USER CODE BEGIN Application */
 
+/* 栈溢出钩子：系统已不可信，关中断停机并点亮 LED（低电平亮）指示 */
+void vApplicationStackOverflowHook(TaskHandle_t xTask, char *pcTaskName)
+{
+    (void)xTask;
+    (void)pcTaskName;
+    __disable_irq();
+    HAL_GPIO_WritePin(GPIOC, GPIO_PIN_13, GPIO_PIN_RESET);   // LED 常亮
+    for(;;);
+}
+
+/* 内存分配失败钩子：heap 耗尽（heap_4 无碎片回收），同样停机指示 */
+void vApplicationMallocFailedHook(void)
+{
+    __disable_irq();
+    HAL_GPIO_WritePin(GPIOC, GPIO_PIN_13, GPIO_PIN_RESET);
+    for(;;);
+}
+
 /* USER CODE END Application */
 

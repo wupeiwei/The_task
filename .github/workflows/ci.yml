@@ -1,0 +1,34 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  protocol-test:
+    name: Protocol tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Run protocol tests
+        run: python3 tests/test_protocol.py
+
+  build:
+    name: Build (${{ matrix.board }})
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        board: [gimbal, chassis]
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install ARM toolchain
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y gcc-arm-none-eabi cmake ninja-build
+      - name: Configure
+        working-directory: boards/${{ matrix.board }}
+        run: cmake --preset Debug
+      - name: Build
+        working-directory: boards/${{ matrix.board }}
+        run: cmake --build build/Debug
