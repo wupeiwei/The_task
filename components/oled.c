@@ -187,13 +187,11 @@ void oled_show_num(uint8_t page, uint8_t col, int32_t num, uint8_t len)
     buf[i--] = '\0';
     uint32_t n;
     if (num < 0)
-    {
-        buf[i--] = '-';                 /* 负号先占位 */
-        n = (uint32_t)(-(int64_t)num);  /* int64 中间量防 INT32_MIN 取负溢出 */
-    }
+        n = (uint32_t)(-(int64_t)num);  /* 先取绝对值（int64 中间量防 INT32_MIN 溢出） */
     else
         n = (uint32_t)num;
-    do { buf[i--] = '0' + (n % 10); n /= 10; } while (n > 0);  /* 无符号转换，不依赖负数取余 */
+    do { buf[i--] = '0' + (n % 10); n /= 10; } while (n > 0);  /* 无符号转换 */
+    if (num < 0) buf[i--] = '-';                                /* 负号补在数字块前 → -123 */
     while (i > 0 && strlen(&buf[i + 1]) < len) buf[i--] = ' '; /* 不足 len 前补空格（右对齐） */
     oled_show_string(page, col, &buf[i + 1]);
 }
