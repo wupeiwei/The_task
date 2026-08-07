@@ -178,6 +178,9 @@ void StartMotorTask(void const * argument)
   float u  = 0.0f;
 
   uint16_t last_cnt = 0;
+  uint32_t last_tick = HAL_GetTick();   //  基准时间
+  uint16_t acc_cnt = 0;                     // 500ms 累计计数（堵转判定用）
+  uint32_t acc_tick = HAL_GetTick();        // 累计窗口起点
 
   /* Infinite loop */
   for(;;)
@@ -186,7 +189,15 @@ void StartMotorTask(void const * argument)
     uint16_t cnt = __HAL_TIM_GET_COUNTER(&htim3);
     int16_t diff = (int16_t)(cnt - last_cnt);      // int16 相减，溢出自动回绕
     last_cnt = cnt;
-    int32_t rpm = diff * 6000 / 44;                // diff/44圈 ÷ 0.01s × 60
+
+    uint32_t now = HAL_GetTick();
+    uint32_t dt_ms = now - last_tick;   // 无符号差值
+    last_tick = now;
+    if (dt_ms == 0) dt_ms = 1;          // 防除零
+
+    // 3. 换算：真实窗口
+    int32_t rpm = diff * 60000 / (44 * (int32_t)dt_ms);
+
 
     //PID 目标：失联时按 0 处理（即使 health_task 还没跑到，本周期就停）
     int16_t target = can_comm_ok ? motor_target_speed : 0;
@@ -215,6 +226,22 @@ void StartMotorTask(void const * argument)
 
     //反馈：实际转速给 can_send_task 发反馈帧 
     motor_current_speed = (int16_t)rpm;
+
+    //堵转检测：500ms 计数域累计（粒度 2.7 RPM/计数，低速不误报）
+    acc_cnt += (uint16_t)(diff < 0 ? -diff : diff);
+    if (HAL_GetTick() - acc_tick >= 500)
+    {
+      if (target != 0 && acc_cnt < 3)
+        motor_fault = 1;                           // 堵转：有指令但几乎没动
+      else if (target == 0)
+        motor_fault = 0;                           // 目标归零自动恢复
+      acc_cnt = 0;                                   //  窗口复位
+      acc_tick = HAL_GetTick();
+    }
+
+    if (target != 0 && acc_cnt >= 3)  motor_online = 1;   // 有指令且动了  在线
+    else if (motor_fault)             motor_online = 0;   // 堵转  不在线
+    // target==0：保持原状
 
     osDelay(10);
   }
@@ -335,15 +362,7 @@ void StartHealthTask(void const * argument)
     }
     else
       can_comm_ok = 1;                     // 正常
-
-    /* 电机异常：目标≠0 且实际≈0 持续 500ms（20ms×25次） */
-    static uint8_t motor_fault_cnt;
-    if (motor_target_speed != 0 && (motor_current_speed > -30 && motor_current_speed < 30))
-      motor_fault_cnt++;
-    else
-      motor_fault_cnt = 0;
-    if (motor_fault_cnt > 25) motor_fault = 1;
-    else if (motor_target_speed == 0) motor_fault = 0;   // 目标归零自动恢复
+    
     osDelay(20);
   }
   /* USER CODE END StartHealthTask */
