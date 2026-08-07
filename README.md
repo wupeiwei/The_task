@@ -15,15 +15,18 @@
 | OLED | - | I2C1（PB6/PB7），SSD1306 128x64 |
 | 呼吸灯 | PC13（CAN 异常） | PC13（电机异常） |
 
-## 软件架构（三层分层）
+## 软件架构（三层分层 + 双板单工程）
 
 ```
-application/   应用层（预留）
-components/    中间层：协议、CAN 收发、OLED 驱动（双板共用，条件编译区分）
-boards/        硬件层：CubeMX 生成（chassis/ 与 gimbal/ 两个工程目录）
+CMakeLists.txt      顶层工程：-DBOARD=gimbal|chassis 选择板型（同一工程+条件编译）
+application/        应用层（预留）
+components/         中间层：协议、CAN 收发、OLED 驱动（双板共用，条件编译区分）
+boards/             硬件层：CubeMX 生成（chassis/ 与 gimbal/ 两个外设配置目录）
 ```
 
-双板共用同一套 `components/` 源码，通过 `BOARD_GIMBAL` / `BOARD_CHASSIS` 编译宏区分板级差异（如 CAN 接收过滤器 ID、呼吸灯异常源）。
+- 顶层 CMake 工程通过 `-DBOARD=` 选项（`cmake --preset gimbal` / `chassis`）选择板型，编译宏 `BOARD_GIMBAL` / `BOARD_CHASSIS` 区分板级逻辑——满足任务书"双板共用同一工程，通过条件编译区分"要求
+- 两板外设配置分离（`boards/gimbal/`、`boards/chassis/` 各持 .ioc）：因外设资源真实冲突（TIM1 两板同为 PA8 但频率需求不同：舵机 50Hz vs 电机 20kHz；PA1 云台为 ADC 通道、底盘为 GPIO 输出），单 .ioc 无法表达两套外设
+- 双板共用同一套 `components/` 源码，通过 `BOARD_GIMBAL` / `BOARD_CHASSIS` 编译宏区分板级差异（如 CAN 接收过滤器 ID、呼吸灯异常源）
 
 ## FreeRTOS 任务设计
 
@@ -60,11 +63,18 @@ boards/        硬件层：CubeMX 生成（chassis/ 与 gimbal/ 两个工程目�
 ## 构建与烧录
 
 ```bash
-# 云台板
-cmake --preset gimbal && cmake --build build/Debug
-# 底盘板
-cmake --preset chassis && cmake --build build/Debug
+# 顶层工程：同一工程按板型选择（任务书要求）
+cmake --preset gimbal && cmake --build build/gimbal    # 云台板 → build/gimbal/gimbal_dual.elf
+cmake --preset chassis && cmake --build build/chassis  # 底盘板 → build/chassis/gimbal_dual.elf
 ```
+
+烧录使用各板目录下的 `openocd.cfg`（ST-LINK + OpenOCD），两板固件独立烧录。
+
+## 测试与 CI
+
+- `tests/test_protocol.py`：协议层测试（CRC 校验向量 0xF4、双帧回环、篡改拦截、56 种单比特错误），`python3 tests/test_protocol.py` 直接运行
+- GitHub Actions（`.github/workflows/ci.yml`）：push/PR 自动编译两板 + 跑协议测试
+- 运行时安全机制：栈溢出检测（`configCHECK_FOR_STACK_OVERFLOW=2` 栈顶标记法）、内存分配失败钩子、OLED 任务栈高水位显示（display_task 行 6 `STK` 字段）
 
 ## 开发环境与工具链
 

@@ -1,0 +1,35 @@
+{
+    "version": 3,
+    "configurePresets": [
+        {
+            "name": "gimbal",
+            "generator": "Ninja",
+            "binaryDir": "${sourceDir}/build/${presetName}",
+            "toolchainFile": "${sourceDir}/boards/gimbal/cmake/gcc-arm-none-eabi.cmake",
+            "cacheVariables": {
+                "CMAKE_BUILD_TYPE": "Debug",
+                "BOARD": "gimbal"
+            }
+        },
+        {
+            "name": "chassis",
+            "generator": "Ninja",
+            "binaryDir": "${sourceDir}/build/${presetName}",
+            "toolchainFile": "${sourceDir}/boards/chassis/cmake/gcc-arm-none-eabi.cmake",
+            "cacheVariables": {
+                "CMAKE_BUILD_TYPE": "Debug",
+                "BOARD": "chassis"
+            }
+        }
+    ],
+    "buildPresets": [
+        {
+            "name": "gimbal",
+            "configurePreset": "gimbal"
+        },
+        {
+            "name": "chassis",
+            "configurePreset": "chassis"
+        }
+    ]
+}
