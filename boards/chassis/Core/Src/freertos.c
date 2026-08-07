@@ -170,8 +170,6 @@ void StartMotorTask(void const * argument)
 {
   /* USER CODE BEGIN StartMotorTask */
   HAL_TIM_PWM_Start(&htim1, TIM_CHANNEL_1);       // 启动 PWM 输出（PA8 开始出波形）
-  motor_online = 1;
-  HAL_TIM_Encoder_Start(&htim3, TIM_CHANNEL_ALL); // 启动编码器计数
 
   float kp = 0.0f, ki = 0.0f, kd = 0.0f;           //
   float e1 = 0.0f, e2 = 0.0f;                      // 历史误差（增量式要存两个）
@@ -199,8 +197,20 @@ void StartMotorTask(void const * argument)
     int32_t rpm = diff * 60000 / (44 * (int32_t)dt_ms);
 
 
-    //PID 目标：失联时按 0 处理（即使 health_task 还没跑到，本周期就停）
-    int16_t target = can_comm_ok ? motor_target_speed : 0;
+    //失联处理
+    int16_t target;
+    if (can_comm_ok)
+    {
+      target = motor_target_speed;
+    }
+    else
+    {
+      target = 0;
+      u = 0.0f;          /*  清累积输出 → PWM 立即归零（不等积分收敛） */
+      e1 = e2 = 0.0f;    /*  重置历史误差 → 恢复通信时 PID 从零开始，不突跳 */
+    }
+
+
 
     //增量式 PID
     float err = (float)(target - rpm);     // 用 target 替换原 motor_target_speed
@@ -235,13 +245,15 @@ void StartMotorTask(void const * argument)
         motor_fault = 1;                           // 堵转：有指令但几乎没动
       else if (target == 0)
         motor_fault = 0;                           // 目标归零自动恢复
+
+      if (target != 0 && acc_cnt >= 3)  motor_online = 1;   // 有指令且动了  在线
+      else                              motor_online = 0;   // 堵转  不在线
+
       acc_cnt = 0;                                   //  窗口复位
       acc_tick = HAL_GetTick();
     }
 
-    if (target != 0 && acc_cnt >= 3)  motor_online = 1;   // 有指令且动了  在线
-    else if (motor_fault)             motor_online = 0;   // 堵转  不在线
-    // target==0：保持原状
+
 
     osDelay(10);
   }
