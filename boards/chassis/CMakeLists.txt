@@ -48,12 +48,14 @@ target_sources(${CMAKE_PROJECT_NAME} PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}/../../components/can_protocol.c
     ${CMAKE_CURRENT_SOURCE_DIR}/../../components/can_bus.c
     ${CMAKE_CURRENT_SOURCE_DIR}/../../components/oled.c
+    ${CMAKE_CURRENT_SOURCE_DIR}/../../components/controller/PID.c
 )
 
 # Add include paths
 target_include_directories(${CMAKE_PROJECT_NAME} PRIVATE
     # Add user defined include paths
     ${CMAKE_CURRENT_SOURCE_DIR}/../../components
+    ${CMAKE_CURRENT_SOURCE_DIR}/../../components/controller
 )
 
 # Add project symbols (macros)

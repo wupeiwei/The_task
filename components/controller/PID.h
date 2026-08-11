@@ -1,7 +1,3 @@
-//
-// Created by salen on 2026/8/11.
-//
-
 #ifndef PID_H
 #define PID_H
 

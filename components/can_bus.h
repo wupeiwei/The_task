@@ -5,11 +5,6 @@
 #ifndef TASK_CAN_BUS_H
 #define TASK_CAN_BUS_H
 #include <stdint.h>
-#include "FreeRTOS.h"
-#include "queue.h"
-
-
-extern QueueHandle_t can_rx_queue;//FreeRTOS.c里定义好的接收队列
 
 //启用过滤器+激活中断
 void can_bus_init(void);

@@ -1,7 +1,7 @@
 #include "can_bus.h"
 #include "can.h"          // hcan 句柄（CubeMX 生成）
-#include "FreeRTOS.h"
-#include "queue.h"
+#include "can_protocol.h"
+#include "state.h"        // 共享状态实例
 #include <stdint.h>
 
 //条件编译定义接收 ID
@@ -10,14 +10,12 @@
 #else
 #define CAN_RX_ID  0x101   // 底盘收控制帧
 #endif
-//如果这里不定义，下面 can_bus_init 里 CAN_RX_ID 会编译报错
 
-uint32_t tx_fail_cnt = 0;   // 发送失败计数（诊断用）
-
+uint32_t tx_fail_cnt = 0;   // 发送失败计数
 
 void can_bus_init(void)
 {
-    /* CAN 过滤器：只放行本板关心的帧，其余硬件直接丢弃 */
+    /* CAN 过滤器 */
     CAN_FilterTypeDef filter = {0};
     filter.FilterIdHigh      = (uint16_t)(CAN_RX_ID << 5);  // 标准帧 ID 存高 11 位
     filter.FilterIdLow       = 0;
@@ -30,7 +28,7 @@ void can_bus_init(void)
     filter.FilterActivation  = ENABLE;
     HAL_CAN_ConfigFilter(&hcan, &filter);
 
-    /* 启动 CAN + 激活 FIFO0 接收中断（收到帧会进回调） */
+    /* 启动 CAN + 激活 FIFO0 接收中断 */
     HAL_CAN_Start(&hcan);
     HAL_CAN_ActivateNotification(&hcan, CAN_IT_RX_FIFO0_MSG_PENDING);
 }
@@ -38,12 +36,12 @@ void can_bus_init(void)
 
 void can_bus_send(uint16_t id, uint8_t *data)
 {
-    CAN_TxHeaderTypeDef hdr = {0};//好比寄一封信，这就是定义信的结构体
-    hdr.StdId = id;//好比收件地址，过底盘过滤器用
-    hdr.IDE = CAN_ID_STD;//好比信封规格，两种帧格式，标准帧够用就不用扩展帧
-    hdr.RTR = CAN_RTR_DATA;//好比是信的类型，数据帧类型
-    hdr.DLC   = 8;//好比是信的页数，8字节
-    uint32_t mailbox;//好比回执单号，API签名要求有这个参数
+    CAN_TxHeaderTypeDef hdr = {0};
+    hdr.StdId = id;
+    hdr.IDE = CAN_ID_STD;
+    hdr.RTR = CAN_RTR_DATA;
+    hdr.DLC   = 8;
+    uint32_t mailbox;
 
     if (HAL_CAN_AddTxMessage(&hcan, &hdr, data, &mailbox) != HAL_OK)
     {
@@ -52,22 +50,43 @@ void can_bus_send(uint16_t id, uint8_t *data)
 }
 
 
-/* CAN 接收中断回调（中断上下文！只搬数据，不做解析） */
+// CAN 接收中断回调直解
 void HAL_CAN_RxFifo0MsgPendingCallback(CAN_HandleTypeDef *hcan)
 {
     CAN_RxHeaderTypeDef hdr;
     uint8_t rx_data[8];
-
-    /* 从 FIFO0 取出整帧（8 字节） */
     HAL_CAN_GetRxMessage(hcan, CAN_RX_FIFO0, &hdr, rx_data);
 
-    // 启动竞态防御：队列未创建前丢弃帧（此时系统未真正启动，丢帧无影响）修复竞态
-    if (can_rx_queue == NULL) return;
-
-    /* 整帧入队（FromISR 版本：中断里专用，不阻塞） */
-    BaseType_t need_yield = pdFALSE;
-    xQueueSendFromISR(can_rx_queue, rx_data, &need_yield);
-
-    /* 如果刚才打断的任务优先级低于等着收队首的任务，立即切换 */
-    portYIELD_FROM_ISR(need_yield);
+    //中断直解：解析 + 写共享变量 + 序号/心跳检查
+#ifdef BOARD_GIMBAL
+    feedback_frame_t ff;
+    if (parse_feedback_frame(rx_data, &ff))
+    {
+        if (ff.version != 1) { /* 版本不符，整帧丢弃 */ }
+        else if (ff.number == can_link.last_rx_seq) { can_link.dup_cnt++; }
+        else {
+            motor_ctrl.motor_current_speed = ff.motor_current_speed;
+            motor_ctrl.motor_echo = ff.motor_target_speed_echo;
+            chassis.chassis_motor_fault = (ff.chassis_state & 0x04) ? 1 : 0;
+            if ((uint8_t)(ff.number - can_link.last_rx_seq) > 1) can_link.drop_cnt++;
+            can_link.last_rx_seq = ff.number;
+            can_link.last_rx_tick = HAL_GetTick();
+        }
+    }
+#else
+    control_frame_t cf;
+    if (parse_control_frame(rx_data, &cf))
+    {
+        if (cf.version != 1) { /* 版本不符，整帧丢弃 */ }
+        else if (cf.number == can_link.last_rx_seq) { can_link.dup_cnt++; }
+        else {
+            motor_ctrl.motor_target_speed = cf.motor_target_speed;
+            gimbal.servo_target_speed = cf.servo_target_speed;
+            gimbal.servo_online = (cf.gimbal_state & 0x01) ? 1 : 0;
+            if ((uint8_t)(cf.number - can_link.last_rx_seq) > 1) can_link.drop_cnt++;
+            can_link.last_rx_seq = cf.number;
+            can_link.last_rx_tick = HAL_GetTick();
+        }
+    }
+#endif
 }
