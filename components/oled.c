@@ -2,51 +2,82 @@
 #include "i2c.h"
 #include <string.h>
 
-/* SSD1306 I2C 地址：0x3C（7 位）→ HAL 里左移一位 0x78 */
+/* SSD1306-compatible I2C address: 0x3C (7-bit), shifted to 0x78 for HAL. */
 #define OLED_ADDR  0x78
+#define OLED_COLUMN_OFFSET  0
 #define OLED_CMD   0x00   /* 控制字节：后续是命令 */
 #define OLED_DATA  0x40   /* 控制字节：后续是数据 */
+
+static HAL_StatusTypeDef oled_transmit(uint8_t control, const uint8_t *buf, uint16_t len)
+{
+    uint8_t packet[17];
+    packet[0] = control;
+
+    while (len > 0)
+    {
+        uint16_t chunk = len > 16 ? 16 : len;
+        memcpy(&packet[1], buf, chunk);
+        HAL_StatusTypeDef status = HAL_I2C_Master_Transmit(
+            &hi2c1, OLED_ADDR, packet, chunk + 1, 100);
+        if (status != HAL_OK)
+            return status;
+        buf += chunk;
+        len -= chunk;
+    }
+    return HAL_OK;
+}
+
+static HAL_StatusTypeDef oled_transmit_commands(const uint8_t *commands, uint16_t len)
+{
+    uint8_t packet[33];
+
+    if (len > sizeof(packet) - 1)
+        return HAL_ERROR;
+
+    packet[0] = OLED_CMD;
+    memcpy(&packet[1], commands, len);
+    return HAL_I2C_Master_Transmit(&hi2c1, OLED_ADDR, packet, len + 1, 200);
+}
 
 /* 写命令 */
 static void oled_write_cmd(uint8_t cmd)
 {
-    HAL_I2C_Mem_Write(&hi2c1, OLED_ADDR, OLED_CMD, I2C_MEMADD_SIZE_8BIT, &cmd, 1, 50);
+    (void)oled_transmit_commands(&cmd, 1);
 }
 
-/* 写数据（连续写，比逐字节快很多） */
+/* 写数据 */
 static void oled_write_data(const uint8_t *buf, uint16_t len)
 {
-    HAL_I2C_Mem_Write(&hi2c1, OLED_ADDR, OLED_DATA, I2C_MEMADD_SIZE_8BIT, (uint8_t *)buf, len, 50);
+    (void)oled_transmit(OLED_DATA, buf, len);
 }
 
 /* 定位：页地址 0~7（每页 8 像素行）+ 列地址 0~127 */
 static void oled_set_pos(uint8_t page, uint8_t col)
 {
-    oled_write_cmd(0xB0 | (page & 0x07));                /* 页地址 */
-    oled_write_cmd(0x00 | (col & 0x0F));                 /* 列低 4 位 */
-    oled_write_cmd(0x10 | ((col >> 4) & 0x0F));          /* 列高 4 位 */
+    col += OLED_COLUMN_OFFSET;
+    oled_write_cmd(0xB0 | (page & 0x07));
+    oled_write_cmd(0x10 | ((col >> 4) & 0x0F));
+    oled_write_cmd(0x00 | (col & 0x0F));
 }
 
-/* SSD1306 标准初始化序列（128x64，I2C） */
+
 void oled_init(void)
 {
     static const uint8_t init_seq[] = {
         0xAE,             /* display off */
-        0xD5, 0x80,       /* 时钟分频 */
-        0xA8, 0x3F,       /* 多路复用 1/64 */
-        0xD3, 0x00,       /* 显示偏移 0 */
-        0x40,             /* 起始行 0 */
-        0x8D, 0x14,       /* 电荷泵开（I2C 版必须） */
-        0x20, 0x02,       /* 内存模式：页（匹配 oled_set_pos 的 0xB0 页定位命令） */
-        0xA1,             /* 段重映射（右对齐） */
-        0xC8,             /* COM 扫描方向 */
-        0xDA, 0x12,       /* COM 引脚配置 */
-        0x81, 0xCF,       /* 对比度 */
-        0xD9, 0xF1,       /* 预充电周期 */
-        0xDB, 0x40,       /* VCOMH */
-        0xA4,             /* 显示内容 RAM */
-        0xA6,             /* 正常显示（非反色） */
-        0x2E,             /* 关闭滚动 */
+        0xD5, 0x80,       /* display clock */
+        0xA8, 0x3F,       /* multiplex ratio 1/64 */
+        0xD3, 0x00,       /* display offset 0 */
+        0x40,             /* display start line 0 */
+        0xA1,             /* segment remap */
+        0xC8,             /* reverse COM scan */
+        0xDA, 0x12,       /* COM pin configuration */
+        0x81, 0xCF,       /* contrast */
+        0xD9, 0xF1,       /* pre-charge period */
+        0xDB, 0x30,       /* VCOMH deselect level */
+        0xA4,             /* display RAM content */
+        0xA6,             /* normal display */
+        0x8D, 0x14,       /* SSD1306 charge pump on */
         0xAF              /* display on */
     };
     for (uint16_t i = 0; i < sizeof(init_seq); i++)
@@ -55,11 +86,12 @@ void oled_init(void)
 
 void oled_clear(void)
 {
-    uint8_t zeros[128] = {0};
+    uint8_t line[128];
+    memset(line, 0, sizeof(line));
     for (uint8_t page = 0; page < 8; page++)
     {
         oled_set_pos(page, 0);
-        oled_write_data(zeros, 128);
+        oled_write_data(line, sizeof(line));
     }
 }
 

@@ -57,6 +57,8 @@ can_link_state_t can_link = {0};
 motor_control_t  motor_ctrl = {0};
 chassis_state_t  chassis = {0};
 gimbal_state_t   gimbal = {0};
+static uint16_t center_y = 2048;
+static uint16_t center_x = 2048;
 volatile uint16_t adc_buf[2] = {2048, 2048};   // 板级私有：DMA 持续写入的摇杆原始值（CH0/CH1）
 /* USER CODE END Variables */
 osThreadId input_taskHandle;
@@ -273,25 +275,27 @@ void vApplicationMallocFailedHook(void)
 
 static void Input_Init(void)
 {
-  HAL_ADC_Start_DMA(&hadc1, (uint32_t*)adc_buf, 2);   // 启动 DMA 采样（只启动这一次）
+  HAL_ADC_Start_DMA(&hadc1, (uint32_t*)adc_buf, 2);   // 启动 DMA 采样
   osDelay(5);
+  center_y = adc_buf[0];
+  center_x = adc_buf[1];
   __HAL_DMA_DISABLE_IT(&hdma_adc1, DMA_IT_HT | DMA_IT_TC);   // DMA 静默搬运，任务轮询读
   HAL_TIM_PWM_Start(&htim1, TIM_CHANNEL_1);   // 启动舵机 PWM50Hz
 }
 static void Input_read_and_map(void)
 {
-  // 读原始值：CH0=Y轴（电机），CH1=X轴（舵机）——按实际接线调
+  // 读原始值：CH0=Y轴（电机），CH1=X轴（舵机）
   int32_t y_raw = adc_buf[0];
   int32_t x_raw = adc_buf[1];
 
-  //摇杆回中 = 2048，减去得到偏差（-2048~+2048）设置回中为0点
-  y_raw -= 2048;
-  if (y_raw > -50 && y_raw < 50) y_raw = 0;            // 死区：防摇杆抖动漂移
-  motor_ctrl.motor_target_speed = (int16_t)(y_raw * 1000 / 2048); // 映射 ±1000 RPM
 
-  x_raw -= 2048;
-  if (x_raw > -50 && x_raw < 50) x_raw = 0;
-  gimbal.servo_target_speed = (int16_t)(x_raw * 1000 / 2048); // 舵机目标转速
+  y_raw -= center_y;
+  if (y_raw > -20 && y_raw < 20) y_raw = 0;            // 死区
+  motor_ctrl.motor_target_speed = (int16_t)(y_raw * 6000 / 2048); // 映射
+
+  x_raw -= center_x;
+  if (x_raw > -20 && x_raw < 20) x_raw = 0;
+  gimbal.servo_target_speed = (int16_t)(x_raw * 2000 / 2048); // 舵机目标转速
 }
 static void servo_output(void)
 {

@@ -21,7 +21,7 @@ float pid_calc(pid_t *pid, float ref, float fdb)
     pid->e2 = pid->e1;
     pid->e1 = err;
 
-    /* 输出限幅（原在 Motor_Output，收进组件统一处理） */
+    /* 输出限幅 */
     if (pid->u >  pid->max_output) pid->u =  pid->max_output;
     if (pid->u < -pid->max_output) pid->u = -pid->max_output;
     return pid->u;

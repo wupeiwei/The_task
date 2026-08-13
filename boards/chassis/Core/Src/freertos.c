@@ -84,6 +84,7 @@ static void Motor_PID_Calculate(void);
 static void Motor_Output(void);
 static void Motor_Fault_Check(void);
 static void Can_Feedback_Pack(uint8_t *tx_data);
+static void str_pad(char *buf, uint8_t width);
 
 /* USER CODE END FunctionPrototypes */
 
@@ -175,7 +176,7 @@ void StartMotorTask(void const * argument)
   /* USER CODE BEGIN StartMotorTask */
   HAL_TIM_PWM_Start(&htim1, TIM_CHANNEL_1);
   HAL_TIM_Encoder_Start(&htim3, TIM_CHANNEL_ALL);
-  pid_init(&motor_pid, 0.0f, 0.0f, 0.0f, 1000.0f);
+  pid_init(&motor_pid, 0.6f, 0.1f, 0.0f, 3000.0f);
 
   last_tick = HAL_GetTick();
   acc_tick = HAL_GetTick();
@@ -202,7 +203,7 @@ void StartMotorTask(void const * argument)
 void StartCanSendTask(void const * argument)
 {
   /* USER CODE BEGIN StartCanSendTask */
-  uint8_t tx_data[8];                     // 打包/发送的桥梁缓冲
+  uint8_t tx_data[8];                     // 缓冲
 
   /* Infinite loop */
   for(;;)
@@ -292,6 +293,7 @@ void StartLedTask(void const * argument)
 void StartDisplayTask(void const * argument)
 {
   /* USER CODE BEGIN StartDisplayTask */
+  osDelay(1000);
   oled_init();
   oled_clear();
   char buf[22];
@@ -300,16 +302,21 @@ void StartDisplayTask(void const * argument)
   {
     //行0：舵机目标转速 + 在线
     sprintf(buf, "SERVO:%5dRPM %s", gimbal.servo_target_speed, gimbal.servo_online ? "ON " : "OFF");
+    str_pad(buf,21);
     oled_show_string(0, 0, buf);
     //行2：电机目标/实际转速
     sprintf(buf, "MOTOR:%4d/%4d", motor_ctrl.motor_target_speed, motor_ctrl.motor_current_speed);
+    str_pad(buf,21);
     oled_show_string(2, 0, buf);
     //行4：电机在线 + 异常
-    sprintf(buf, "MST:%s FLT:%s", chassis.motor_online ? "ON " : "OFF", chassis.motor_fault ? "YES" : "NO ");
+    sprintf(buf, "MST:%s FUT:%s", chassis.motor_online ? "ON " : "OFF", chassis.motor_fault ? "YES" : "NO ");
+    str_pad(buf,21);
     oled_show_string(4, 0, buf);
     //行6：板间通信 + 电机任务栈水位（高水位监测：余量越小越危险）
     uint16_t stk = uxTaskGetStackHighWaterMark(motor_taskHandle);
-    sprintf(buf, "CAN:%s STK:%3u", can_link.can_comm_ok ? "OK " : "ERR", (unsigned)stk);
+    //sprintf(buf, "CAN:%s STK:%3u", can_link.can_comm_ok ? "OK " : "ERR", (unsigned)stk);
+    sprintf(buf, "CAN:%s ", can_link.can_comm_ok ? "OK " : "ERR");
+    str_pad(buf,21);
     oled_show_string(6, 0, buf);
     osDelay(100);                    // 100ms 刷新（人眼够用，省 CPU）
   }
@@ -369,6 +376,7 @@ static void Motor_Statu_Update(void)
 }
 static void Motor_PID_Calculate(void)
 {
+  //motor_pid.u = 300.0f;  //测试用
   pid_calc(&motor_pid, (float)target, (float)rpm);
 }
 static void Motor_Output(void)
@@ -397,7 +405,7 @@ static void Motor_Fault_Check(void)
     {
       chassis.motor_fault = 1;                           // 堵转：有指令但几乎没动
     }
-    else if (target == 0)
+    else if (target != 0 && acc_cnt >= 3)
     {
        chassis.motor_fault = 0;                           // 目标归零自动恢复
     }
@@ -423,6 +431,13 @@ static void Can_Feedback_Pack(uint8_t *tx_data)
   ff.chassis_state |= chassis.motor_fault ? 0x04 : 0x00;
   ff.number = tx_seq++;                  // tx_seq 保持函数内 static（Can_Feedback_Pack 里）
   pack_feedback_frame(&ff, tx_data);
+}
+static void str_pad(char *buf, uint8_t width)
+{
+  uint8_t len = 0;
+  while (len < width && buf[len] != '\0') len++;
+  while (len < width) buf[len++] = ' ';
+  buf[len] = '\0';
 }
 
 
