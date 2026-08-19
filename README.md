@@ -19,15 +19,12 @@
 
 ```
 CMakeLists.txt      顶层工程：-DBOARD=gimbal|chassis 选择板型（同一工程+条件编译）
-application/        应用层（预留）
+application/        应用层
 components/         中间层：协议、CAN 收发、OLED 驱动、PID 控制器（双板共用，条件编译区分）
 boards/             硬件层：CubeMX 生成（chassis/ 与 gimbal/ 两个外设配置目录）
 ```
 
-- 顶层 CMake 工程通过 `-DBOARD=` 选项（`cmake --preset gimbal` / `chassis`）选择板型，编译宏 `BOARD_GIMBAL` / `BOARD_CHASSIS` 区分板级逻辑——满足任务书"双板共用同一工程，通过条件编译区分"要求
-- 两板外设配置分离（`boards/gimbal/`、`boards/chassis/` 各持 .ioc）：因外设资源真实冲突（TIM1 两板同为 PA8 但频率需求不同：舵机 50Hz vs 电机 20kHz；PA1 云台为 ADC 通道、底盘为 GPIO 输出），单 .ioc 无法表达两套外设
-- 双板共用同一套 `components/` 源码，通过 `BOARD_GIMBAL` / `BOARD_CHASSIS` 编译宏区分板级差异（如 CAN 接收过滤器 ID、呼吸灯异常源）
-- 共享状态收拢为四个**状态对象**（`components/state.h`）：链路健康 / 电机控制 / 底盘状态 / 云台状态——成员级 volatile 精确标注，中断与任务只做单成员原子访问（不整体拷贝结构体，避免撕裂）
+- 双板共用同一套 `components/` 源码，通过 `BOARD_GIMBAL` / `BOARD_CHASSIS` 编译宏区分板级差异
 
 ## FreeRTOS 任务设计
 
@@ -40,7 +37,7 @@ boards/             硬件层：CubeMX 生成（chassis/ 与 gimbal/ 两个外�
 | led_task | Low | 1ms | ✅ | ✅ | 软件 PWM 呼吸灯 |
 | display_task | Low | 100ms | - | ✅ | OLED 状态显示（含任务栈高水位） |
 
-任务间数据共享采用**状态对象**（`can_link` / `motor_ctrl` / `chassis` / `gimbal` 四个结构体实例，成员级 volatile，单成员原子访问）；CAN 帧不再走队列——解析下沉到接收中断（见下）。
+
 
 ## 板间通信方案（CAN 1Mbps）
 
@@ -54,41 +51,14 @@ boards/             硬件层：CubeMX 生成（chassis/ 与 gimbal/ 两个外�
 
 ## 核心算法
 
-- **增量式 PID 速度环**（底盘电机，组件化）：`components/controller/PID.h` 封装 `pid_t` 对象（参数 + 历史误差 + 累积输出 + 限幅），接口 `pid_init`（设参+清状态）/ `pid_calc`（单步计算，内部限幅 ±1000）/ `pid_reset`（失联复位清状态，参数不动）；参数待真机整定（只改 `pid_init(&motor_pid, ...)` 一行）；失联时复位 PID 状态，PWM 立即归零
+- **增量式 PID 速度环**（底盘电机，组件化）：`components/controller/PID.h` 封装 `pid_t` 对象（参数 + 历史误差 + 累积输出 + 限幅），接口 `pid_init`（设参+清状态）/ `pid_calc`（单步计算，内部限幅 ）/ `pid_reset`（失联复位清状态，参数不动）；参数待真机整定（只改 `pid_init(&motor_pid, ...)` 一行）；失联时复位 PID 状态，PWM 立即归零
 - **M 法测速**：编码器计数差按真实时间窗换算 RPM（`diff × 60000 ÷ (44 × dt_ms)`，dt_ms 取 HAL_GetTick 差值，消除任务调度抖动；44 = 11 线 × 4 倍频）
 - **堵转检测（计数域）**：500ms 窗口累计编码器计数，有指令且累计 < 3 计数（≈8 RPM）判堵转——规避 10ms 窗口 136 RPM/计数的低速量化盲区；电机在线同理（窗口内有指令且有响应）
-- **摇杆映射**：12 位 ADC 减中点 2048 → 死区 ±50 滤抖动 → 线性映射 ±1000 RPM
+- **摇杆映射**：12 位 ADC 减中点 2048 → 死区滤抖动 → 线性映射 
 - **软件 PWM 呼吸灯**：PC13 无硬件 PWM 通道，1ms 节拍 GPIO 翻转模拟 20 级亮度三角波
 - **CRC-8 校验**：标准 CRC-8/ATM（poly 0x07），校验向量 123456789 = 0xF4，防总线干扰导致的脏数据
 
-## 构建与烧录
 
-```bash
-# 在仓库根目录执行：同一工程按板型选择（任务书要求）
-cmake --preset gimbal && cmake --build build/gimbal    # 云台板 → build/gimbal/gimbal_dual.elf
-cmake --preset chassis && cmake --build build/chassis  # 底盘板 → build/chassis/gimbal_dual.elf
-```
-
-> 注意：`gimbal`/`chassis` preset 定义在**仓库根**的 `CMakePresets.json`；各板目录（`boards/<板>/`）内的 preset 为 CubeMX 生成的 `Debug`/`Release`，供单板调试用。
-
-烧录使用各板目录下的 `openocd.cfg`（ST-LINK + OpenOCD），两板固件独立烧录。
-
-## 测试与 CI
-
-- `tests/test_protocol.py`：协议层测试（CRC 校验向量 0xF4、双帧回环、篡改拦截、56 种单比特错误），`python3 tests/test_protocol.py` 直接运行
-- GitHub Actions（`.github/workflows/ci.yml`）：push/PR 自动编译两板 + 跑协议测试
-- 运行时安全机制：栈溢出检测（`configCHECK_FOR_STACK_OVERFLOW=2` 栈顶标记法）、内存分配失败钩子、OLED 任务栈高水位显示（display_task 行 6 `STK` 字段）
-
-## 开发环境与工具链
-
-- **STM32CubeMX 6.17**：外设图形化配置，生成 CMake 工程（Toolchain 选 `CMake`）
-- **CLion 2026.2**：编辑、编译、调试一体；使用内置 CMake + Ninja 生成器
-- **ARM GCC 12.2.1**（arm-none-eabi）：交叉编译器，经各板目录下的 `cmake/gcc-arm-none-eabi.cmake` 工具链文件接入
-- **OpenOCD 0.12.0 + ST-LINK**：烧录与调试，配置文件为各板目录下的 `openocd.cfg`
-
-## 开发记录
-
-每个功能模块独立 commit 并推送（见 Git 历史），便于回溯与评审。
 
 ## 改进空间
 

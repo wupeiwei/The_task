@@ -25,14 +25,6 @@
 
 /* Private includes ----------------------------------------------------------*/
 /* USER CODE BEGIN Includes */
-#include "queue.h"
-#include "can_protocol.h"
-#include "adc.h"
-#include "can_bus.h"
-#include "state.h"   // 共享状态实例（成员级 volatile，单成员原子访问）
-#include "tim.h"
-#include "dma.h"
-extern DMA_HandleTypeDef hdma_adc1;
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
@@ -52,14 +44,6 @@ extern DMA_HandleTypeDef hdma_adc1;
 
 /* Private variables ---------------------------------------------------------*/
 /* USER CODE BEGIN Variables */
-//共享状态实例（类型定义在 state.h，成员级 volatile）
-can_link_state_t can_link = {0};
-motor_control_t  motor_ctrl = {0};
-chassis_state_t  chassis = {0};
-gimbal_state_t   gimbal = {0};
-static uint16_t center_y = 2048;
-static uint16_t center_x = 2048;
-volatile uint16_t adc_buf[2] = {2048, 2048};   // 板级私有：DMA 持续写入的摇杆原始值（CH0/CH1）
 /* USER CODE END Variables */
 osThreadId input_taskHandle;
 osThreadId can_send_taskHandle;
@@ -68,10 +52,6 @@ osThreadId led_taskHandle;
 
 /* Private function prototypes -----------------------------------------------*/
 /* USER CODE BEGIN FunctionPrototypes */
-static void Input_Init(void);
-static void Input_read_and_map(void);
-static void servo_output(void);
-static void Can_control_Pack(uint8_t *tx_data);
 /* USER CODE END FunctionPrototypes */
 
 void StartInputTask(void const * argument);
@@ -153,16 +133,12 @@ void MX_FREERTOS_Init(void) {
 * @retval None
 */
 /* USER CODE END Header_StartInputTask */
-void StartInputTask(void const * argument)
+__weak void StartInputTask(void const * argument)
 {
   /* USER CODE BEGIN StartInputTask */
-  Input_Init();
-  gimbal.servo_online = 1;       //舵机在线
   /* Infinite loop */
   for(;;)
   {
-    Input_read_and_map();
-    servo_output();
     osDelay(10);
   }
   /* USER CODE END StartInputTask */
@@ -175,16 +151,13 @@ void StartInputTask(void const * argument)
 * @retval None
 */
 /* USER CODE END Header_StartCanSendTask */
-void StartCanSendTask(void const * argument)
+__weak void StartCanSendTask(void const * argument)
 {
   /* USER CODE BEGIN StartCanSendTask */
-  uint8_t tx_data[8];
   /* Infinite loop */
   for(;;)
   {
-    Can_control_Pack(tx_data);
-    can_bus_send(CAN_CTRL_FRAME_ID, tx_data);
-    osDelay(5);                         // 5ms 周期
+    osDelay(5);
   }
   /* USER CODE END StartCanSendTask */
 }
@@ -196,16 +169,12 @@ void StartCanSendTask(void const * argument)
 * @retval None
 */
 /* USER CODE END Header_StartHealthTask */
-void StartHealthTask(void const * argument)
+__weak void StartHealthTask(void const * argument)
 {
   /* USER CODE BEGIN StartHealthTask */
   /* Infinite loop */
   for(;;)
   {
-    if (HAL_GetTick() - can_link.last_rx_tick > 100)  // 100ms 没收到有效帧
-      can_link.can_comm_ok = 0;                     //  板间通信异常
-    else
-      can_link.can_comm_ok = 1;                     //  正常
     osDelay(20);
   }
   /* USER CODE END StartHealthTask */
@@ -218,105 +187,18 @@ void StartHealthTask(void const * argument)
 * @retval None
 */
 /* USER CODE END Header_StartLedTask */
-void StartLedTask(void const * argument)
+__weak void StartLedTask(void const * argument)
 {
   /* USER CODE BEGIN StartLedTask */
-  uint8_t duty = 0;        // 当前亮度 0~20
-  int8_t  dir = 1;         // 呼吸方向（亮→灭 / 灭→亮）
-  uint8_t pwm_cnt = 0;     // 20ms 周期内的位置
   /* Infinite loop */
   for(;;)
   {
-#ifdef BOARD_GIMBAL
-    uint8_t fault = !can_link.can_comm_ok;   // 云台：CAN 通信异常
-#else
-    uint8_t fault = chassis.motor_fault;    // 底盘：电机异常
-#endif
-    if (fault)
-    {
-      /* 软件 PWM：亮 duty/20，灭 (20-duty)/20 */
-      HAL_GPIO_WritePin(GPIOC, GPIO_PIN_13, (pwm_cnt < duty) ? GPIO_PIN_RESET : GPIO_PIN_SET);
-      pwm_cnt++;
-      if (pwm_cnt >= 20)            // 一个 PWM 周期结束
-      {
-        pwm_cnt = 0;
-        duty += dir;                // 亮度调一级
-        if (duty >= 20 || duty == 0) dir = -dir;   // 到头反向
-      }
-    }
-    else
-    {
-      HAL_GPIO_WritePin(GPIOC, GPIO_PIN_13, GPIO_PIN_SET);  // 正常：灭
-    }
-    osDelay(1);                     // 1ms 节拍（PWM 周期 20ms，20 级亮度）
+    osDelay(1);
   }
   /* USER CODE END StartLedTask */
 }
 
 /* Private application code --------------------------------------------------*/
 /* USER CODE BEGIN Application */
-
-//栈溢出钩子
-void vApplicationStackOverflowHook(TaskHandle_t xTask, char *pcTaskName)
-{
-    (void)xTask;
-    (void)pcTaskName;
-    __disable_irq();
-    HAL_GPIO_WritePin(GPIOC, GPIO_PIN_13, GPIO_PIN_RESET);   // LED 常亮
-    for(;;);
-}
-//内存分配失败钩子
-void vApplicationMallocFailedHook(void)
-{
-    __disable_irq();
-    HAL_GPIO_WritePin(GPIOC, GPIO_PIN_13, GPIO_PIN_RESET);
-    for(;;);
-}
-
-static void Input_Init(void)
-{
-  HAL_ADC_Start_DMA(&hadc1, (uint32_t*)adc_buf, 2);   // 启动 DMA 采样
-  osDelay(5);
-  center_y = adc_buf[0];
-  center_x = adc_buf[1];
-  __HAL_DMA_DISABLE_IT(&hdma_adc1, DMA_IT_HT | DMA_IT_TC);   // DMA 静默搬运，任务轮询读
-  HAL_TIM_PWM_Start(&htim1, TIM_CHANNEL_1);   // 启动舵机 PWM50Hz
-}
-static void Input_read_and_map(void)
-{
-  // 读原始值：CH0=Y轴（电机），CH1=X轴（舵机）
-  int32_t y_raw = adc_buf[0];
-  int32_t x_raw = adc_buf[1];
-
-
-  y_raw -= center_y;
-  if (y_raw > -20 && y_raw < 20) y_raw = 0;            // 死区
-  motor_ctrl.motor_target_speed = (int16_t)(y_raw * 6000 / 2048); // 映射
-
-  x_raw -= center_x;
-  if (x_raw > -20 && x_raw < 20) x_raw = 0;
-  gimbal.servo_target_speed = (int16_t)(x_raw * 2000 / 2048); // 舵机目标转速
-}
-static void servo_output(void)
-{
-  int32_t pulse = 1500 + gimbal.servo_target_speed / 2;
-  __HAL_TIM_SET_COMPARE(&htim1, TIM_CHANNEL_1, (uint32_t)pulse);
-}
-static void Can_control_Pack(uint8_t *tx_data)
-{
-  control_frame_t cf = {0};
-  static uint8_t tx_seq = 0;
-  cf.motor_target_speed = motor_ctrl.motor_target_speed;        //  摇杆指令
-  cf.servo_target_speed = gimbal.servo_target_speed;        //  舵机指令（同上）
-  cf.version = 1; //协议版本
-  cf.gimbal_state = 0;
-  cf.gimbal_state |= gimbal.servo_online ? 0x01 : 0x00;   // 位0：舵机在线
-  cf.gimbal_state |= can_link.can_comm_ok ? 0x02 : 0x00;    // 位1：板间通信
-  cf.number = tx_seq++;                   // 先填序号（自然回绕）
-  //pack 成 8 字节
-  pack_control_frame(&cf, tx_data);
-}
-
-
 /* USER CODE END Application */
 
